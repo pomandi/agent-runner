@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""feed-publisher-mcp MCP Server - Container Version with Image Analysis"""
+"""feed-publisher-mcp MCP Server - Container Version with Image Vision"""
 import asyncio
 import json
 import logging
@@ -11,7 +11,7 @@ from botocore.config import Config
 from datetime import datetime
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.types import Tool, TextContent, ImageContent
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("feed-publisher-mcp")
@@ -25,14 +25,14 @@ BRANDS = {
         "facebook_page_id": "335388637037718",
         "instagram_id": "17841406855004574",
         "access_token_env": "FACE_POMANDI_ACCESS_TOKEN",
-        "products": ["men's suits", "ties", "shirts", "formal wear", "accessories"]
+        "products": ["men's suits", "ties", "shirts", "formal wear", "accessories", "shoes"]
     },
     "costume": {
         "language": "fr",
         "facebook_page_id": "101071881743506",
         "instagram_id": "17841441106266856",
         "access_token_env": "FACE_COSTUME_ACCESS_TOKEN",
-        "products": ["men's suits", "ties", "shirts", "formal wear", "accessories"]
+        "products": ["men's suits", "ties", "shirts", "formal wear", "accessories", "shoes"]
     }
 }
 
@@ -41,16 +41,6 @@ AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_BUCKET_NAME = os.getenv("AWS_STORAGE_BUCKET_NAME", "saleorme")
 AWS_REGION = os.getenv("AWS_S3_REGION_NAME", "us-east-1")
-
-# Anthropic API for image analysis
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-
-# Database Configuration
-DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
-DB_PORT = int(os.getenv("DB_PORT", "5433"))
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "")
-DB_NAME = os.getenv("DB_NAME", "postgres")
 
 GRAPH_API_URL = "https://graph.facebook.com/v22.0"
 
@@ -72,117 +62,42 @@ def get_access_token(brand: str) -> str:
     return os.getenv(brand_config["access_token_env"], "")
 
 
-async def analyze_image_with_claude(image_url: str, brand: str = "pomandi") -> dict:
-    """Download image and analyze with Claude Vision API."""
-    if not ANTHROPIC_API_KEY:
-        return {"error": "ANTHROPIC_API_KEY not configured"}
-    
-    brand_config = BRANDS.get(brand.lower(), BRANDS["pomandi"])
-    expected_products = brand_config.get("products", [])
-    
-    try:
-        # Download image
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            img_response = await client.get(image_url)
-            if img_response.status_code != 200:
-                return {"error": f"Failed to download image: {img_response.status_code}"}
-            
-            image_data = base64.b64encode(img_response.content).decode('utf-8')
-            
-            # Detect media type
-            content_type = img_response.headers.get('content-type', 'image/jpeg')
-            if 'png' in content_type:
-                media_type = 'image/png'
-            elif 'gif' in content_type:
-                media_type = 'image/gif'
-            elif 'webp' in content_type:
-                media_type = 'image/webp'
-            else:
-                media_type = 'image/jpeg'
-            
-            # Call Claude Vision API
-            analysis_response = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": ANTHROPIC_API_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json"
-                },
-                json={
-                    "model": "claude-sonnet-4-20250514",
-                    "max_tokens": 500,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": media_type,
-                                        "data": image_data
-                                    }
-                                },
-                                {
-                                    "type": "text",
-                                    "text": f"""Analyze this product image and respond in JSON format:
-
-{{
-  "product_type": "what is this product? (e.g., men's suit, dinner plates, tie, shirt, shoes, etc.)",
-  "description": "brief description of the product",
-  "colors": ["main colors"],
-  "is_fashion": true/false (is this men's fashion/formal wear?),
-  "is_suitable_for_brand": true/false (suitable for a men's suit brand selling: {', '.join(expected_products)}),
-  "confidence": 0.0-1.0,
-  "reason": "why suitable or not suitable"
-}}
-
-Be strict: if it's NOT men's fashion (suits, ties, shirts, shoes, accessories), mark is_suitable_for_brand as false."""
-                                }
-                            ]
-                        }
-                    ]
-                },
-                timeout=60.0
-            )
-            
-            if analysis_response.status_code != 200:
-                return {"error": f"Claude API error: {analysis_response.status_code}", "details": analysis_response.text}
-            
-            result = analysis_response.json()
-            text_content = result.get("content", [{}])[0].get("text", "{}")
-            
-            # Parse JSON from response
-            try:
-                # Find JSON in response
-                json_start = text_content.find('{')
-                json_end = text_content.rfind('}') + 1
-                if json_start >= 0 and json_end > json_start:
-                    analysis = json.loads(text_content[json_start:json_end])
-                else:
-                    analysis = {"raw_response": text_content, "error": "Could not parse JSON"}
-            except json.JSONDecodeError:
-                analysis = {"raw_response": text_content, "error": "Invalid JSON in response"}
-            
-            analysis["image_url"] = image_url
-            return analysis
-            
-    except Exception as e:
-        logger.error(f"Image analysis error: {e}")
-        return {"error": str(e)}
+async def download_image(image_url: str) -> tuple:
+    """Download image and return (base64_data, media_type)."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(image_url)
+        if response.status_code != 200:
+            raise Exception(f"Failed to download image: {response.status_code}")
+        
+        content_type = response.headers.get('content-type', 'image/jpeg')
+        if 'png' in content_type:
+            media_type = 'image/png'
+        elif 'gif' in content_type:
+            media_type = 'image/gif'
+        elif 'webp' in content_type:
+            media_type = 'image/webp'
+        else:
+            media_type = 'image/jpeg'
+        
+        image_data = base64.standard_b64encode(response.content).decode('utf-8')
+        return image_data, media_type
 
 
 @server.list_tools()
 async def list_tools():
     return [
         Tool(
-            name="analyze_image",
-            description="Analyze a product image to see what it contains. Use this BEFORE posting to verify the image is correct (e.g., men's suit vs dinner plates). Returns product type, description, and whether suitable for the brand.",
+            name="view_image",
+            description="""View a product image so you can see what it contains.
+            
+USE THIS BEFORE POSTING to verify the image shows men's fashion (suits, ties, shirts, shoes).
+If it shows something else (plates, furniture, etc.), DO NOT post it.
+
+Returns the actual image so you can analyze it yourself.""",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "image_url": {"type": "string", "description": "Public URL of the image to analyze"},
-                    "brand": {"type": "string", "enum": ["pomandi", "costume"], "default": "pomandi", "description": "Brand to check suitability for"}
+                    "image_url": {"type": "string", "description": "Public URL of the image to view"}
                 },
                 "required": ["image_url"]
             }
@@ -212,7 +127,9 @@ async def list_tools():
         ),
         Tool(
             name="publish_facebook_photo",
-            description="Publish photo to Facebook page. TIP: Use analyze_image first to verify the image is suitable.",
+            description="""Publish photo to Facebook page.
+            
+IMPORTANT: Use view_image first to verify the image shows men's fashion!""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -225,7 +142,9 @@ async def list_tools():
         ),
         Tool(
             name="publish_instagram_photo",
-            description="Publish photo to Instagram. TIP: Use analyze_image first to verify the image is suitable.",
+            description="""Publish photo to Instagram.
+            
+IMPORTANT: Use view_image first to verify the image shows men's fashion!""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -236,17 +155,6 @@ async def list_tools():
                 "required": ["brand", "image_url", "caption"]
             }
         ),
-        Tool(
-            name="find_suitable_product",
-            description="Find a suitable product image from S3 for the brand. Analyzes multiple images and returns the first suitable one.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "brand": {"type": "string", "enum": ["pomandi", "costume"], "default": "pomandi"},
-                    "max_to_check": {"type": "integer", "default": 5, "description": "Maximum images to analyze before giving up"}
-                }
-            }
-        ),
     ]
 
 
@@ -255,55 +163,35 @@ async def call_tool(name: str, arguments: dict):
     logger.info(f"Tool called: {name}")
 
     try:
-        if name == "analyze_image":
+        if name == "view_image":
             image_url = arguments.get("image_url", "")
-            brand = arguments.get("brand", "pomandi")
             
             if not image_url:
                 return [TextContent(type="text", text=json.dumps({"error": "image_url is required"}))]
             
-            result = await analyze_image_with_claude(image_url, brand)
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            try:
+                image_data, media_type = await download_image(image_url)
+                
+                # Return image so Claude can see it + context
+                return [
+                    ImageContent(
+                        type="image",
+                        data=image_data,
+                        mimeType=media_type
+                    ),
+                    TextContent(
+                        type="text", 
+                        text=f"""Image URL: {image_url}
 
-        elif name == "find_suitable_product":
-            brand = arguments.get("brand", "pomandi")
-            max_to_check = arguments.get("max_to_check", 5)
-            
-            # List products
-            s3 = get_s3_client()
-            response = s3.list_objects_v2(Bucket=AWS_BUCKET_NAME, Prefix="products/", MaxKeys=max_to_check * 2)
-            files = response.get('Contents', [])
-            
-            checked = 0
-            for obj in files:
-                if checked >= max_to_check:
-                    break
-                
-                key = obj['Key']
-                # Skip non-image files
-                if not any(key.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp']):
-                    continue
-                
-                image_url = f"https://{AWS_BUCKET_NAME}.s3.{AWS_REGION}.amazonaws.com/{key}"
-                
-                # Analyze image
-                analysis = await analyze_image_with_claude(image_url, brand)
-                checked += 1
-                
-                if analysis.get("is_suitable_for_brand", False):
-                    return [TextContent(type="text", text=json.dumps({
-                        "status": "found",
-                        "image_url": image_url,
-                        "key": key,
-                        "analysis": analysis,
-                        "checked_count": checked
-                    }, indent=2))]
-            
-            return [TextContent(type="text", text=json.dumps({
-                "status": "not_found",
-                "message": f"No suitable product found after checking {checked} images",
-                "checked_count": checked
-            }, indent=2))]
+Please analyze this image:
+1. What type of product is shown? (suit, tie, shirt, plates, furniture, etc.)
+2. Is this men's fashion suitable for Pomandi/Costume brand?
+3. If suitable, describe colors and style for caption writing.
+4. If NOT suitable (not men's fashion), say "SKIP - not suitable" and explain why."""
+                    )
+                ]
+            except Exception as e:
+                return [TextContent(type="text", text=json.dumps({"error": f"Failed to load image: {str(e)}"}))]
 
         elif name == "get_s3_image":
             key = arguments.get("key", "")
