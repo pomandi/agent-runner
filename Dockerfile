@@ -1,5 +1,5 @@
-# Agent Runner Container - Full Visibility + Scheduling
-# Runs Claude CLI agents with complete logging, MCP support, and cron scheduling
+# Agent Runner Container - Full Visibility + Scheduling + API
+# Runs Claude CLI agents with MCP support, cron scheduling, and HTTP API
 
 FROM node:20-slim
 
@@ -38,26 +38,24 @@ COPY agents/ /app/agents/
 # Copy MCP config for Claude
 COPY .mcp.json /app/.mcp.json
 
-# Copy scripts
+# Copy scripts and API
 COPY entrypoint.sh /entrypoint.sh
 COPY schedule.sh /app/schedule.sh
 COPY run-agent.sh /app/run-agent.sh
+COPY api.py /app/api.py
 RUN chmod +x /entrypoint.sh /app/schedule.sh /app/run-agent.sh
 
 # Environment variables
 ENV AGENT_NAME=feed-publisher
 ENV AGENT_TASK="Run the agent task"
 ENV LOG_LEVEL=verbose
-# Schedule format: "HH:MM,HH:MM" or cron format
-# Examples: "09:00,18:00" for 9am and 6pm
-#           "*/30 * * * *" for every 30 minutes (cron format)
 ENV AGENT_SCHEDULE=""
 
-# Expose port for claude-code-logger proxy
-EXPOSE 8000
+# Expose ports: 8000 for logger, 8080 for API
+EXPOSE 8000 8080
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD pgrep -f "cron\|node" || exit 1
+# Health check via API
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
