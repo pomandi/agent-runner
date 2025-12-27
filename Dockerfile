@@ -23,6 +23,9 @@ RUN npm install -g claude-code-logger
 WORKDIR /app
 RUN mkdir -p /app/logs /app/agents /root/.claude
 
+# Copy agents from repo (built into container)
+COPY agents/ /app/agents/
+
 # Copy entrypoint script
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
