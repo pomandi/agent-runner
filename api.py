@@ -23,7 +23,7 @@ logger = logging.getLogger("agent-runner-api")
 app = FastAPI(
     title="Agent Runner API",
     description="Run Claude agents remotely with full conversation logging",
-    version="2.0.0"
+    version="2.1.0"
 )
 
 app.add_middleware(
@@ -283,6 +283,43 @@ async def get_logs(limit: int = 10):
         })
     
     return {"logs": logs, "total": len(log_files)}
+
+
+@app.get("/logs/latest")
+async def get_latest_log(tail: int = 0):
+    """Get the most recent log file - ONE URL to see everything!
+    
+    Shows:
+    - Agent thinking and decisions
+    - 🔧 TOOL CALL with inputs
+    - 📥 TOOL RESULT with outputs
+    - 💰 Cost and duration
+    
+    Args:
+        tail: Number of lines from end (0 = all)
+    """
+    log_files = sorted(LOGS_DIR.glob("*.log"), key=lambda x: x.stat().st_mtime, reverse=True)
+    
+    if not log_files:
+        return {
+            "status": "no_logs",
+            "message": "No log files found. Run an agent first with POST /run",
+            "running": current_run["running"]
+        }
+    
+    latest = log_files[0]
+    content = latest.read_text()
+    lines = content.split("\n")
+    
+    if tail > 0 and len(lines) > tail:
+        lines = lines[-tail:]
+    
+    return {
+        "file": latest.name,
+        "lines": len(lines),
+        "running": current_run["running"],
+        "content": "\n".join(lines)
+    }
 
 
 @app.get("/logs/{filename}")
