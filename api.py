@@ -2,11 +2,13 @@
 """
 Agent Runner HTTP API
 Simple API to run agents remotely without SSH
+Enhanced with full conversation logging
 """
 import asyncio
 import os
 import subprocess
 import logging
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -20,8 +22,8 @@ logger = logging.getLogger("agent-runner-api")
 
 app = FastAPI(
     title="Agent Runner API",
-    description="Run Claude agents remotely",
-    version="1.0.0"
+    description="Run Claude agents remotely with full conversation logging",
+    version="2.0.0"
 )
 
 app.add_middleware(
@@ -48,6 +50,7 @@ class RunRequest(BaseModel):
     agent: Optional[str] = None  # Uses AGENT_NAME env if not provided
     task: Optional[str] = None   # Uses AGENT_TASK env if not provided
     allowed_tools: Optional[str] = None  # MCP tools pattern
+    verbose: Optional[bool] = True  # Enable verbose logging
 
 
 class RunResponse(BaseModel):
@@ -58,8 +61,49 @@ class RunResponse(BaseModel):
     task: Optional[str] = None
 
 
-def run_agent_sync(agent: str, task: str, allowed_tools: str, log_file: Path):
-    """Run agent in subprocess."""
+def format_stream_message(msg: dict) -> str:
+    """Format a stream-json message for human readable log."""
+    msg_type = msg.get("type", "unknown")
+    
+    if msg_type == "assistant":
+        content = msg.get("message", {}).get("content", [])
+        text_parts = []
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") == "text":
+                    text_parts.append(part.get("text", ""))
+                elif part.get("type") == "tool_use":
+                    tool_name = part.get("name", "unknown")
+                    tool_input = json.dumps(part.get("input", {}), indent=2)
+                    text_parts.append(f"\n🔧 TOOL CALL: {tool_name}\n   Input: {tool_input}\n")
+            elif isinstance(part, str):
+                text_parts.append(part)
+        return "\n".join(text_parts) if text_parts else ""
+    
+    elif msg_type == "user":
+        content = msg.get("message", {}).get("content", [])
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "tool_result":
+                tool_id = part.get("tool_use_id", "")[:8]
+                result = part.get("content", "")
+                if isinstance(result, list):
+                    result = json.dumps(result, indent=2)
+                elif isinstance(result, str) and len(result) > 500:
+                    result = result[:500] + "... (truncated)"
+                return f"\n📥 TOOL RESULT [{tool_id}...]:\n{result}\n"
+        return ""
+    
+    elif msg_type == "result":
+        # Final result
+        cost = msg.get("cost_usd", 0)
+        duration = msg.get("duration_ms", 0) / 1000
+        return f"\n💰 Cost: ${cost:.4f} | ⏱️ Duration: {duration:.1f}s\n"
+    
+    return ""
+
+
+def run_agent_sync(agent: str, task: str, allowed_tools: str, log_file: Path, verbose: bool = True):
+    """Run agent in subprocess with detailed logging."""
     global current_run
     
     try:
@@ -75,45 +119,87 @@ def run_agent_sync(agent: str, task: str, allowed_tools: str, log_file: Path):
         if mcp_src.exists():
             mcp_dst.write_text(mcp_src.read_text())
         
+        # Build command with verbose output
         cmd = [
             "claude",
             "--mcp-config", "/root/.claude/.mcp.json",
             "--allowedTools", allowed_tools,
-            "--print", task
+            "--output-format", "stream-json",  # Full conversation in JSON
+            "--verbose",  # Timing and stats
+            task
         ]
         
         logger.info(f"Running: {' '.join(cmd)}")
         
         with open(log_file, "w") as f:
-            f.write(f"=== Agent Run Started ===\n")
+            f.write("=" * 60 + "\n")
+            f.write("   AGENT RUN - FULL CONVERSATION LOG\n")
+            f.write("=" * 60 + "\n")
             f.write(f"Agent: {agent}\n")
             f.write(f"Task: {task}\n")
             f.write(f"Time: {datetime.now().isoformat()}\n")
-            f.write(f"========================\n\n")
+            f.write(f"Allowed Tools: {allowed_tools}\n")
+            f.write("=" * 60 + "\n\n")
             f.flush()
             
-            result = subprocess.run(
+            # Run and capture stream-json output
+            process = subprocess.Popen(
                 cmd,
                 cwd="/app",
-                stdout=f,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                timeout=300  # 5 minute timeout
+                text=True,
+                bufsize=1
             )
             
-            f.write(f"\n========================\n")
-            f.write(f"Exit code: {result.returncode}\n")
+            message_count = 0
+            tool_calls = 0
+            
+            for line in process.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Try to parse as JSON
+                try:
+                    msg = json.loads(line)
+                    formatted = format_stream_message(msg)
+                    
+                    if formatted:
+                        message_count += 1
+                        if "TOOL CALL" in formatted:
+                            tool_calls += 1
+                        f.write(formatted)
+                        f.flush()
+                    
+                except json.JSONDecodeError:
+                    # Plain text output
+                    f.write(line + "\n")
+                    f.flush()
+            
+            process.wait(timeout=300)
+            return_code = process.returncode
+            
+            f.write("\n" + "=" * 60 + "\n")
+            f.write("   RUN SUMMARY\n")
+            f.write("=" * 60 + "\n")
+            f.write(f"Exit code: {return_code}\n")
+            f.write(f"Messages: {message_count}\n")
+            f.write(f"Tool calls: {tool_calls}\n")
             f.write(f"Finished: {datetime.now().isoformat()}\n")
+            f.write("=" * 60 + "\n")
         
-        logger.info(f"Agent completed with code: {result.returncode}")
+        logger.info(f"Agent completed with code: {return_code}")
         
     except subprocess.TimeoutExpired:
         logger.error("Agent timed out")
+        process.kill()
         with open(log_file, "a") as f:
-            f.write(f"\n[ERROR] Agent timed out after 5 minutes\n")
+            f.write(f"\n❌ ERROR: Agent timed out after 5 minutes\n")
     except Exception as e:
         logger.error(f"Agent error: {e}")
         with open(log_file, "a") as f:
-            f.write(f"\n[ERROR] {str(e)}\n")
+            f.write(f"\n❌ ERROR: {str(e)}\n")
     finally:
         current_run["running"] = False
 
@@ -141,7 +227,7 @@ async def status():
 
 @app.post("/run", response_model=RunResponse)
 async def run_agent(request: RunRequest, background_tasks: BackgroundTasks):
-    """Run an agent with optional custom task."""
+    """Run an agent with full conversation logging."""
     
     if current_run["running"]:
         raise HTTPException(
@@ -158,12 +244,13 @@ async def run_agent(request: RunRequest, background_tasks: BackgroundTasks):
     
     agent = request.agent or os.getenv("AGENT_NAME", "feed-publisher")
     task = request.task or os.getenv("AGENT_TASK", "Run the agent task")
+    verbose = request.verbose if request.verbose is not None else True
     
     # Determine allowed tools
     if request.allowed_tools:
         allowed_tools = request.allowed_tools
     elif agent == "feed-publisher":
-        allowed_tools = "mcp__feed-publisher-mcp__*"
+        allowed_tools = "mcp__feed-publisher-mcp__*,mcp__social-media-publish__*"
     else:
         allowed_tools = "*"
     
@@ -171,11 +258,11 @@ async def run_agent(request: RunRequest, background_tasks: BackgroundTasks):
     log_file = LOGS_DIR / f"{agent}-{run_id}.log"
     
     # Run in background
-    background_tasks.add_task(run_agent_sync, agent, task, allowed_tools, log_file)
+    background_tasks.add_task(run_agent_sync, agent, task, allowed_tools, log_file, verbose)
     
     return RunResponse(
         status="started",
-        message=f"Agent {agent} started in background",
+        message=f"Agent {agent} started with verbose logging",
         run_id=run_id,
         agent=agent,
         task=task
@@ -199,8 +286,13 @@ async def get_logs(limit: int = 10):
 
 
 @app.get("/logs/{filename}")
-async def get_log_content(filename: str, tail: int = 100):
-    """Get content of a specific log file."""
+async def get_log_content(filename: str, tail: int = 0):
+    """Get content of a specific log file.
+    
+    Args:
+        filename: Log file name
+        tail: Number of lines from end (0 = all)
+    """
     log_file = LOGS_DIR / filename
     
     if not log_file.exists():
@@ -209,7 +301,7 @@ async def get_log_content(filename: str, tail: int = 100):
     content = log_file.read_text()
     lines = content.split("\n")
     
-    if tail and len(lines) > tail:
+    if tail > 0 and len(lines) > tail:
         lines = lines[-tail:]
     
     return {
@@ -217,6 +309,18 @@ async def get_log_content(filename: str, tail: int = 100):
         "lines": len(lines),
         "content": "\n".join(lines)
     }
+
+
+@app.delete("/logs/{filename}")
+async def delete_log(filename: str):
+    """Delete a log file."""
+    log_file = LOGS_DIR / filename
+    
+    if not log_file.exists():
+        raise HTTPException(status_code=404, detail="Log file not found")
+    
+    log_file.unlink()
+    return {"status": "deleted", "file": filename}
 
 
 if __name__ == "__main__":
