@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "feed-publisher-mcp": {
+      "command": "python3",
+      "args": [
+        "/app/mcp-servers/feed-publisher-mcp/server.py"
+      ]
+    }
+  }
+}

@@ -6,7 +6,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 echo -e "${BLUE}=========================================="
 echo -e "       AGENT RUNNER CONTAINER"
@@ -35,6 +35,14 @@ else
     ls -la /app/agents/ 2>/dev/null || echo "No agents directory"
 fi
 
+# Check MCP config
+if [ -f "/app/.mcp.json" ]; then
+    echo -e "${GREEN}[OK]${NC} MCP config found"
+    cp /app/.mcp.json /root/.claude/.mcp.json 2>/dev/null || true
+else
+    echo -e "${YELLOW}[WARN]${NC} No MCP config found"
+fi
+
 # Create log file path
 LOG_FILE="/app/logs/${AGENT_NAME}-$(date +%Y%m%d-%H%M%S).log"
 echo -e "${GREEN}[LOG]${NC} Output will be saved to: $LOG_FILE"
@@ -60,12 +68,11 @@ echo -e "${YELLOW}[EXECUTING]${NC} Agent: $AGENT_NAME"
 echo -e "${BLUE}==========================================${NC}"
 echo ""
 
-# Run Claude CLI through the proxy for full visibility
-# --verbose: Show timing and token usage
-# --debug: Enable debug mode
-# --allowedTools "*": Allow all tools
+# Run Claude CLI with MCP config
+cd /app
 ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-http://localhost:8000/}" \
 claude -p "$AGENT_NAME" \
+    --mcp-config /app/.mcp.json \
     --verbose \
     --debug \
     --allowedTools "*" \

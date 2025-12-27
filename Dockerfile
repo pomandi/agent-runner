@@ -1,5 +1,5 @@
 # Agent Runner Container - Full Visibility
-# Runs Claude CLI agents with complete logging
+# Runs Claude CLI agents with complete logging and MCP support
 
 FROM node:20-slim
 
@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     python3 \
     python3-pip \
+    python3-venv \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
@@ -21,10 +22,20 @@ RUN npm install -g claude-code-logger
 
 # Create directories
 WORKDIR /app
-RUN mkdir -p /app/logs /app/agents /root/.claude
+RUN mkdir -p /app/logs /app/agents /app/mcp-servers /root/.claude
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt /app/requirements.txt
+RUN pip3 install --break-system-packages -r /app/requirements.txt
+
+# Copy MCP servers
+COPY mcp-servers/ /app/mcp-servers/
 
 # Copy agents from repo (built into container)
 COPY agents/ /app/agents/
+
+# Copy MCP config for Claude
+COPY .mcp.json /app/.mcp.json
 
 # Copy entrypoint script
 COPY entrypoint.sh /entrypoint.sh
