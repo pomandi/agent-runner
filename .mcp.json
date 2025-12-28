@@ -5,6 +5,12 @@
       "args": [
         "/app/mcp-servers/feed-publisher-mcp/server.py"
       ]
+    },
+    "visual-content-mcp": {
+      "command": "python3",
+      "args": [
+        "/app/mcp-servers/visual-content-mcp/server.py"
+      ]
     }
   }
 }
