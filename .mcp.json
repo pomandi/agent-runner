@@ -11,6 +11,12 @@
       "args": [
         "/app/mcp-servers/visual-content-mcp/server.py"
       ]
+    },
+    "agent-outputs-mcp": {
+      "command": "python3",
+      "args": [
+        "/app/mcp-servers/agent-outputs-mcp/server.py"
+      ]
     }
   }
 }
