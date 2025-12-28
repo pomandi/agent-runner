@@ -4,7 +4,7 @@ feed-publisher-mcp MCP Server
 Agent: feed-publisher
 Category: publisher
 
-Publishes feed posts to Facebook and Instagram.
+Publishes feed posts AND stories to Facebook and Instagram.
 Gets product images from AWS S3 (saleorme bucket) and captions from agent_outputs database.
 Supports both Pomandi (NL) and Costume (FR) brands.
 
@@ -416,9 +416,12 @@ async def list_tools():
                 }
             }
         ),
+        # =================================================================
+        # FEED POST TOOLS
+        # =================================================================
         Tool(
             name="publish_facebook_photo",
-            description="Publish photo post to Facebook page. Returns post_id on success.",
+            description="Publish photo post to Facebook page feed. Returns post_id on success.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -462,6 +465,50 @@ async def list_tools():
                 "required": ["brand", "image_url", "caption"]
             }
         ),
+        # =================================================================
+        # STORY TOOLS
+        # =================================================================
+        Tool(
+            name="publish_facebook_story",
+            description="Publish photo story to Facebook page. Stories are visible for 24 hours. Returns story_id on success.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "brand": {
+                        "type": "string",
+                        "enum": ["pomandi", "costume"],
+                        "description": "Brand to publish to"
+                    },
+                    "image_url": {
+                        "type": "string",
+                        "description": "Public URL of the image"
+                    }
+                },
+                "required": ["brand", "image_url"]
+            }
+        ),
+        Tool(
+            name="publish_instagram_story",
+            description="Publish photo story to Instagram. Stories are visible for 24 hours. Returns media_id on success.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "brand": {
+                        "type": "string",
+                        "enum": ["pomandi", "costume"],
+                        "description": "Brand to publish to"
+                    },
+                    "image_url": {
+                        "type": "string",
+                        "description": "Public URL of the image (must be accessible)"
+                    }
+                },
+                "required": ["brand", "image_url"]
+            }
+        ),
+        # =================================================================
+        # CAPTION AND STATUS TOOLS
+        # =================================================================
         Tool(
             name="get_latest_caption",
             description="Get latest caption from caption-generator agent outputs.",
@@ -574,7 +621,7 @@ async def list_tools():
         # Random Photo Selection Tool
         Tool(
             name="get_random_unused_photo",
-            description="Get a random product photo that hasn't been published recently. Checks last 30 publications to avoid repeats. Use this instead of list_s3_products to ensure variety.",
+            description="Get a random product photo that hasn't been published in the last 15 days. Checks agent_outputs database to avoid repeats. Use this instead of list_s3_products to ensure variety.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -585,8 +632,8 @@ async def list_tools():
                     },
                     "days_lookback": {
                         "type": "integer",
-                        "description": "Days to look back for used photos (default: 30)",
-                        "default": 30
+                        "description": "Days to look back for used photos (default: 15)",
+                        "default": 15
                     }
                 },
                 "required": ["brand"]
@@ -697,6 +744,7 @@ async def call_tool(name: str, arguments: dict):
                     "status": "success",
                     "brand": brand,
                     "platform": "facebook",
+                    "type": "feed_post",
                     "page_id": page_id,
                     "post_id": data.get("post_id") or data.get("id"),
                     "published_at": datetime.now().isoformat()
@@ -771,10 +819,141 @@ async def call_tool(name: str, arguments: dict):
                     "status": "success",
                     "brand": brand,
                     "platform": "instagram",
+                    "type": "feed_post",
                     "instagram_id": instagram_id,
                     "media_id": publish_data.get("id"),
                     "container_id": container_id,
                     "published_at": datetime.now().isoformat()
+                }
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        # =================================================================
+        # STORY HANDLERS
+        # =================================================================
+
+        elif name == "publish_facebook_story":
+            brand = arguments.get("brand", "").lower()
+            image_url = arguments.get("image_url", "")
+
+            if brand not in BRANDS:
+                return [TextContent(type="text", text=json.dumps({"error": f"Unknown brand: {brand}"}))]
+
+            brand_config = BRANDS[brand]
+            access_token = get_access_token(brand)
+
+            if not access_token:
+                return [TextContent(type="text", text=json.dumps({"error": f"No access token for {brand}"}))]
+
+            page_id = brand_config["facebook_page_id"]
+
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                # Facebook Page Stories use /page_id/photo_stories endpoint
+                response = await client.post(
+                    f"{GRAPH_API_URL}/{page_id}/photo_stories",
+                    data={
+                        "photo_url": image_url,
+                        "access_token": access_token
+                    }
+                )
+
+                data = response.json()
+
+                if "error" in data:
+                    return [TextContent(type="text", text=json.dumps({
+                        "status": "error",
+                        "brand": brand,
+                        "platform": "facebook",
+                        "type": "story",
+                        "error": data["error"]
+                    }, indent=2))]
+
+                result = {
+                    "status": "success",
+                    "brand": brand,
+                    "platform": "facebook",
+                    "type": "story",
+                    "page_id": page_id,
+                    "story_id": data.get("post_id") or data.get("id"),
+                    "published_at": datetime.now().isoformat(),
+                    "expires_in": "24 hours"
+                }
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "publish_instagram_story":
+            brand = arguments.get("brand", "").lower()
+            image_url = arguments.get("image_url", "")
+
+            if brand not in BRANDS:
+                return [TextContent(type="text", text=json.dumps({"error": f"Unknown brand: {brand}"}))]
+
+            brand_config = BRANDS[brand]
+            access_token = get_access_token(brand)
+
+            if not access_token:
+                return [TextContent(type="text", text=json.dumps({"error": f"No access token for {brand}"}))]
+
+            instagram_id = brand_config["instagram_id"]
+
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                # Step 1: Create story media container with media_type=STORIES
+                container_response = await client.post(
+                    f"{GRAPH_API_URL}/{instagram_id}/media",
+                    data={
+                        "image_url": image_url,
+                        "media_type": "STORIES",
+                        "access_token": access_token
+                    }
+                )
+
+                container_data = container_response.json()
+
+                if "error" in container_data:
+                    return [TextContent(type="text", text=json.dumps({
+                        "status": "error",
+                        "brand": brand,
+                        "platform": "instagram",
+                        "type": "story",
+                        "step": "create_container",
+                        "error": container_data["error"]
+                    }, indent=2))]
+
+                container_id = container_data.get("id")
+
+                # Step 2: Wait for container to be ready
+                await asyncio.sleep(5)
+
+                # Step 3: Publish the story
+                publish_response = await client.post(
+                    f"{GRAPH_API_URL}/{instagram_id}/media_publish",
+                    data={
+                        "creation_id": container_id,
+                        "access_token": access_token
+                    }
+                )
+
+                publish_data = publish_response.json()
+
+                if "error" in publish_data:
+                    return [TextContent(type="text", text=json.dumps({
+                        "status": "error",
+                        "brand": brand,
+                        "platform": "instagram",
+                        "type": "story",
+                        "step": "publish",
+                        "container_id": container_id,
+                        "error": publish_data["error"]
+                    }, indent=2))]
+
+                result = {
+                    "status": "success",
+                    "brand": brand,
+                    "platform": "instagram",
+                    "type": "story",
+                    "instagram_id": instagram_id,
+                    "media_id": publish_data.get("id"),
+                    "container_id": container_id,
+                    "published_at": datetime.now().isoformat(),
+                    "expires_in": "24 hours"
                 }
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
@@ -1044,7 +1223,7 @@ async def call_tool(name: str, arguments: dict):
 
         elif name == "get_random_unused_photo":
             brand = arguments.get("brand", "pomandi").lower()
-            days_lookback = arguments.get("days_lookback", 30)
+            days_lookback = arguments.get("days_lookback", 15)
 
             try:
                 # Step 1: Get all products from S3
