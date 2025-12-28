@@ -18,12 +18,18 @@ echo -e "${GREEN}API:${NC} http://localhost:8080"
 echo -e "${GREEN}Time:${NC} $(date)"
 echo -e "${BLUE}==========================================${NC}"
 
-# Check if Claude credentials exist
-if [ -f "/root/.claude/.credentials.json" ]; then
-    echo -e "${GREEN}[OK]${NC} Claude credentials found"
+# Auto-create Claude credentials from environment variable
+if [ -n "$CLAUDE_CREDENTIALS" ]; then
+    echo -e "${GREEN}[OK]${NC} Creating credentials from CLAUDE_CREDENTIALS env var"
+    mkdir -p /root/.claude
+    echo "$CLAUDE_CREDENTIALS" > /root/.claude/.credentials.json
+    chmod 600 /root/.claude/.credentials.json
+    echo -e "${GREEN}[OK]${NC} Claude credentials created successfully"
+elif [ -f "/root/.claude/.credentials.json" ]; then
+    echo -e "${GREEN}[OK]${NC} Claude credentials found (mounted)"
 else
     echo -e "${YELLOW}[WARN]${NC} Claude credentials not found"
-    echo -e "${YELLOW}[WARN]${NC} Run: docker cp /root/.claude/.credentials.json <container>:/root/.claude/"
+    echo -e "${YELLOW}[WARN]${NC} Set CLAUDE_CREDENTIALS env var with JSON content"
 fi
 
 # Copy MCP config
