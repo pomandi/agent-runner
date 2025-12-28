@@ -18,8 +18,14 @@ echo -e "${GREEN}API:${NC} http://localhost:8080"
 echo -e "${GREEN}Time:${NC} $(date)"
 echo -e "${BLUE}==========================================${NC}"
 
-# Auto-create Claude credentials from environment variable
-if [ -n "$CLAUDE_CREDENTIALS" ]; then
+# Auto-create Claude credentials from environment variable (base64 encoded)
+if [ -n "$CLAUDE_CREDENTIALS_B64" ]; then
+    echo -e "${GREEN}[OK]${NC} Creating credentials from CLAUDE_CREDENTIALS_B64 env var"
+    mkdir -p /root/.claude
+    echo "$CLAUDE_CREDENTIALS_B64" | base64 -d > /root/.claude/.credentials.json
+    chmod 600 /root/.claude/.credentials.json
+    echo -e "${GREEN}[OK]${NC} Claude credentials created successfully"
+elif [ -n "$CLAUDE_CREDENTIALS" ]; then
     echo -e "${GREEN}[OK]${NC} Creating credentials from CLAUDE_CREDENTIALS env var"
     mkdir -p /root/.claude
     echo "$CLAUDE_CREDENTIALS" > /root/.claude/.credentials.json
@@ -29,7 +35,7 @@ elif [ -f "/root/.claude/.credentials.json" ]; then
     echo -e "${GREEN}[OK]${NC} Claude credentials found (mounted)"
 else
     echo -e "${YELLOW}[WARN]${NC} Claude credentials not found"
-    echo -e "${YELLOW}[WARN]${NC} Set CLAUDE_CREDENTIALS env var with JSON content"
+    echo -e "${YELLOW}[WARN]${NC} Set CLAUDE_CREDENTIALS_B64 env var with base64 encoded JSON"
 fi
 
 # Copy MCP config
