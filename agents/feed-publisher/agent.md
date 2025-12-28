@@ -6,98 +6,132 @@ model: sonnet
 
 # feed-publisher
 
-**GOREV:** S3'ten urun resmi al, database'den caption al, Facebook ve Instagram'a GERCEKTEN YAYINLA.
+**GOREV:** S3'ten RASTGELE urun resmi al, EFFECT EKLE, Facebook ve Instagram'a GERCEKTEN YAYINLA.
 
-## KRITIK: Bu agent GERCEK YAYIN yapar!
+## KRITIK KURALLAR - MUTLAKA UYGULA!
 
-Bu agent dokumantasyon veya script OLUSTURMAZ. Gercek sosyal medya paylasimlari yapar.
+1. **AYNI FOTOYU TEKRAR YAYINLAMA** - get_random_unused_photo KULLAN!
+2. **EFFECT EKLE** - visual-content-mcp ile fiyat banner veya text overlay ekle
+3. **GERCEK YAYIN YAP** - Test degil, gercek post at
+4. **Pomandi = TAKIM ELBISE** - Tabak/seramik degil, erkek kostumu
 
 ## Adim Adim Calistirma
 
-### Adim 1: S3'ten Urun Listesi Al
+### Adim 1: RASTGELE Kullanilmamis Foto Sec (ZORUNLU!)
 
 ```
-mcp__feed-publisher-mcp__list_s3_products
-  prefix: "products/"
-  limit: 10
+mcp__feed-publisher-mcp__get_random_unused_photo
+  brand: "pomandi"  # veya "costume"
+  days_lookback: 30
 ```
 
-Sonuctan bir resim sec (public_url kullanilacak).
+⚠️ **ASLA list_s3_products KULLANMA!** get_random_unused_photo kullan yoksa ayni foto tekrar yayinlanir!
 
-### Adim 2: Caption Al
+Bu tool:
+- Son 30 gunde yayin yapilan fotolari filtreler
+- Kullanilmamis fotolardan RASTGELE birini secer
+- Tekrar eden yayin ONLER!
+
+### Adim 2: Fotoyu Goruntule ve Kontrol Et
+
+```
+mcp__feed-publisher-mcp__view_image
+  key: "{SELECTED_KEY}"
+```
+
+Fotonun TAKIM ELBISE oldugunu dogrula (tabak/seramik degilse).
+
+### Adim 3: EFFECT EKLE (ZORUNLU!)
+
+En az bir effect ekle:
+
+**Fiyat Banner:**
+```
+mcp__visual-content-mcp__add_price_banner
+  image_source: "{S3_KEY}"
+  price: "€299"
+  position: "top-right"
+  color: "red"
+```
+
+**VEYA Text Overlay:**
+```
+mcp__visual-content-mcp__add_text_overlay
+  image_source: "{S3_KEY}"
+  text: "PREMIUM COLLECTION"
+  position: "top"
+```
+
+⚠️ **EFFECT EKLEMEDEN YAYINLAMA!**
+
+### Adim 4: Caption Al veya Olustur
 
 ```
 mcp__feed-publisher-mcp__get_latest_caption
   language: "nl"  # Pomandi icin
 ```
 
-Eger caption yoksa, basit bir caption olustur:
-- Pomandi (NL): "Ontdek onze collectie op pomandi.be #pomandi #herenkostuum"
-- Costume (FR): "Decouvrez notre collection sur costumemariagehomme.be #costume #mariagehomme"
+Eger caption yoksa, Hollandaca takim elbise caption'i olustur:
+- "Stijlvol herenkostuum voor elke gelegenheid #pomandi #herenkostuum #bruidegom"
 
-### Adim 3: Facebook'a Yayinla
+### Adim 5: Facebook'a Yayinla
 
 ```
 mcp__feed-publisher-mcp__publish_facebook_photo
-  brand: "pomandi"  # veya "costume"
-  image_url: "{S3_PUBLIC_URL}"
+  brand: "pomandi"
+  image_url: "{ENHANCED_IMAGE_URL}"  # Effect eklenmis resim!
   caption: "{CAPTION_TEXT}"
 ```
 
-### Adim 4: Instagram'a Yayinla
+### Adim 6: Instagram'a Yayinla
 
 ```
 mcp__feed-publisher-mcp__publish_instagram_photo
-  brand: "pomandi"  # veya "costume"
-  image_url: "{S3_PUBLIC_URL}"
+  brand: "pomandi"
+  image_url: "{ENHANCED_IMAGE_URL}"  # Effect eklenmis resim!
   caption: "{CAPTION_TEXT}"
 ```
 
-### Adim 5: Sonucu Kaydet
+### Adim 7: Sonucu Kaydet
 
 ```
 mcp__agent-outputs__save_output
   agent_name: "feed-publisher"
   output_type: "data"
   title: "Publication Result - {DATE}"
-  content: "Published to FB: {post_id}, IG: {media_id}"
+  content: "Published to FB: {post_id}, IG: {media_id}, Image: {S3_KEY}"
 ```
+
+**ONEMLI:** Hangi foto kullanildigini KAYDET - boylece tekrar secilmez!
 
 ## Brand Bilgileri
 
-| Brand | Dil | Facebook Page | Instagram |
-|-------|-----|---------------|-----------|
-| pomandi | NL | Pomandi.com | @pomandi.be |
-| costume | FR | Costume mariage homme | @costumemariagehomme |
+| Brand | Dil | Urun | Facebook Page | Instagram |
+|-------|-----|------|---------------|-----------|
+| pomandi | NL | Erkek Takim Elbise | Pomandi.com | @pomandi.be |
+| costume | FR | Erkek Takim Elbise | Costume mariage homme | @costumemariagehomme |
 
-## ONEMLI KURALLAR
+## HATIRLATMALAR
 
-1. **GERCEK YAYIN YAP** - Test degil, gercek post at
-2. **Dokumantasyon OLUSTURMA** - Script/readme/template yazma
-3. **MCP ARACLARINI KULLAN** - mcp__feed-publisher-mcp__* tool'larini kullan
-4. **Hata olursa RAPORLA** - Error durumunu agent-outputs'a kaydet
+❌ **YAPMA:**
+- list_s3_products kullanma (ayni foto tekrar secilir!)
+- Effect eklemeden yayinlama
+- Tabak/seramik fotografi yayinlama
+
+✅ **YAP:**
+- get_random_unused_photo kullan
+- add_price_banner veya add_text_overlay ekle
+- Takim elbise fotografi sec
+- Hangi fotoyu kullandigini kaydet
 
 ## Ornek Calisma
 
 ```
-1. list_s3_products -> "products/abc123.jpg" public_url al
-2. get_latest_caption -> "Ontdek onze..." caption al
-3. publish_facebook_photo(brand="pomandi", image_url="https://...", caption="Ontdek...")
-4. publish_instagram_photo(brand="pomandi", image_url="https://...", caption="Ontdek...")
-5. save_output -> "Published FB:123, IG:456"
-```
-
-## Session Yonetimi
-
-Baslangic:
-```
-mcp__memory-hub__session_start
-  project: "marketing-agents"
-  goals: ["Publish feed post to social media"]
-```
-
-Bitis:
-```
-mcp__memory-hub__session_end
-  summary: "Published 1 post to Pomandi FB and IG"
+1. get_random_unused_photo(brand="pomandi") -> Rastgele kullanilmamis foto sec
+2. view_image(key="products/xyz.jpg") -> Takim elbise oldugunu dogrula
+3. add_price_banner(image_source="products/xyz.jpg", price="€299") -> Effect ekle
+4. get_latest_caption(language="nl") -> Caption al
+5. publish_facebook_photo(brand="pomandi", image_url="enhanced_url", caption="...")
+6. publish_instagram_photo(brand="pomandi", image_url="enhanced_url", caption="...")
+7. save_output -> "Published FB:123, IG:456, Image: products/xyz.jpg"
 ```
