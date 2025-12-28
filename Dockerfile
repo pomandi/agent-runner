@@ -3,7 +3,7 @@
 
 FROM node:20-slim
 
-# Install system dependencies including cron
+# Install system dependencies including cron, ffmpeg, and fonts
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
@@ -13,6 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-venv \
     procps \
     cron \
+    ffmpeg \
+    fonts-dejavu-core \
+    fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Claude CLI globally
@@ -23,7 +26,7 @@ RUN npm install -g claude-code-logger
 
 # Create directories
 WORKDIR /app
-RUN mkdir -p /app/logs /app/agents /app/mcp-servers /root/.claude
+RUN mkdir -p /app/logs /app/agents /app/mcp-servers /app/data/visual-content /root/.claude
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt /app/requirements.txt
