@@ -6,47 +6,46 @@ model: sonnet
 
 # feed-publisher
 
-**GOREV:** S3'ten urun resmi al, database'den caption al, Facebook ve Instagram'a GERCEKTEN YAYINLA.
+**TASK:** Get product image from S3, create caption, PUBLISH to Facebook and Instagram.
 
-## KRITIK: Bu agent GERCEK YAYIN yapar!
+## CRITICAL: This agent makes REAL POSTS!
 
-Bu agent dokumantasyon veya script OLUSTURMAZ. Gercek sosyal medya paylasimlari yapar.
+This agent does NOT create documentation or scripts. It makes real social media posts.
 
-## Adim Adim Calistirma
+## Step-by-Step Workflow
 
-### Adim 1: Rastgele Kullanilmamis Foto Sec
+### Step 1: Select Random Unused Photo
 
 ```
 mcp__feed-publisher-mcp__get_random_unused_photo
-  brand: "pomandi"  # veya "costume"
-  days_lookback: 30
+  brand: "pomandi"  # or "costume"
 ```
 
-Bu tool:
-- S3'teki tum fotolari listeler
-- Son 30 gunde yayin yapilan fotolari filtreler
-- Kullanilmamis fotolardan RASTGELE birini secer
-- Tekrar eden yayin ONLER!
+This tool:
+- Lists all photos in S3 bucket
+- Checks agent_outputs database for photos used in **last 15 days**
+- Selects a RANDOM photo from unused ones
+- PREVENTS duplicate posts!
 
-### Adim 2: Caption Al
+### Step 2: Get Caption
 
 ```
 mcp__feed-publisher-mcp__get_latest_caption
-  language: "nl"  # Pomandi icin
+  language: "nl"  # For Pomandi
 ```
 
-Eger caption yoksa, basit bir caption olustur:
-- Pomandi (NL): Hollandaca caption + RANDEVU LINKI
-- Costume (FR): Fransizca caption + website linki
+If no caption available, create a simple one:
+- Pomandi (NL): Dutch caption + APPOINTMENT LINK
+- Costume (FR): French caption + website link
 
-## CAPTION KURALLARI (ZORUNLU!)
+## CAPTION RULES (MANDATORY!)
 
-### Pomandi (NL) - HER ZAMAN RANDEVU LINKINE YONLENDIR!
-- Website: **pomandi.com** (pomandi.be DEGIL!)
-- Randevu linki: **https://pomandi.com/default-channel/appointment?locale=nl**
-- Her caption'da mutlaka randevu linki OLMALI
+### Pomandi (NL) - ALWAYS DIRECT TO APPOINTMENT!
+- Website: **pomandi.com** (NOT pomandi.be!)
+- Appointment link: **https://pomandi.com/default-channel/appointment?locale=nl**
+- Every caption MUST include appointment link
 
-**Ornek Pomandi caption:**
+**Example Pomandi caption:**
 ```
 Stijlvol het nieuwe jaar in met dit prachtige driedelig pak. Perfect voor elke gelegenheid waar je wilt schitteren.
 
@@ -57,9 +56,9 @@ Stijlvol het nieuwe jaar in met dit prachtige driedelig pak. Perfect voor elke g
 
 ### Costume (FR)
 - Website: **costumemariagehomme.be**
-- Her caption'da website linki OLMALI
+- Every caption MUST include website link
 
-**Ornek Costume caption:**
+**Example Costume caption:**
 ```
 Élégance et raffinement pour votre mariage. Découvrez notre collection exclusive.
 
@@ -68,84 +67,103 @@ Stijlvol het nieuwe jaar in met dit prachtige driedelig pak. Perfect voor elke g
 #CostumeMariageHomme #Mariage #Costume #Elegance
 ```
 
-### Adim 3: Facebook'a Yayinla
+### Step 3: Publish to Facebook
 
 ```
 mcp__feed-publisher-mcp__publish_facebook_photo
-  brand: "pomandi"  # veya "costume"
+  brand: "pomandi"  # or "costume"
   image_url: "{S3_PUBLIC_URL}"
   caption: "{CAPTION_TEXT}"
 ```
 
-### Adim 4: Instagram'a Yayinla
+### Step 4: Publish to Instagram
 
 ```
 mcp__feed-publisher-mcp__publish_instagram_photo
-  brand: "pomandi"  # veya "costume"
+  brand: "pomandi"  # or "costume"
   image_url: "{S3_PUBLIC_URL}"
   caption: "{CAPTION_TEXT}"
 ```
 
-### Adim 5: Sonucu Kaydet
+### Step 5: Save Report (MANDATORY!)
+
+⚠️ **THIS STEP IS MANDATORY!** - Must save report after EVERY publication to prevent photo repeats!
 
 ```
 mcp__agent-outputs__save_output
   agent_name: "feed-publisher"
   output_type: "data"
-  title: "Publication Result - {DATE}"
-  content: "Published to FB: {post_id}, IG: {media_id}"
+  title: "Publication - {BRAND} - {DATE}"
+  content: |
+    ## Publication Report
+    - **Brand:** pomandi (or costume)
+    - **S3 Key:** products/xyz.jpg  ← FULL S3 KEY MUST BE HERE!
+    - **Facebook Post ID:** {fb_post_id}
+    - **Instagram Media ID:** {ig_media_id}
+    - **Published At:** {timestamp}
+  tags: ["publication", "{brand}", "{date}"]
 ```
 
-## Brand Bilgileri
+**CRITICAL:** Content MUST contain the S3 key starting with `products/`!
+This allows get_random_unused_photo to skip this photo for 15 days.
 
-| Brand | Dil | Website | Randevu Linki |
-|-------|-----|---------|---------------|
+## Brand Information
+
+| Brand | Language | Website | Appointment Link |
+|-------|----------|---------|------------------|
 | pomandi | NL | pomandi.com | https://pomandi.com/default-channel/appointment?locale=nl |
 | costume | FR | costumemariagehomme.be | - |
 
-## KRITIK KURALLAR (MUTLAKA UYGULA!)
+## CRITICAL RULES (MUST FOLLOW!)
 
-1. **AYNI FOTOYU TEKRAR YAYINLAMA** - get_random_unused_photo KULLAN, list_s3_products KULLANMA!
-2. **RANDEVU LINKINI EKLE** - Pomandi icin HER caption'da randevu linki OLMALI!
-3. **EFFECT EKLE** - visual-content-mcp ile text overlay veya price banner ekle
-4. **GERCEK YAYIN YAP** - Test degil, gercek post at
-5. **Dokumantasyon OLUSTURMA** - Script/readme/template yazma
-6. **Hata olursa RAPORLA** - Error durumunu agent-outputs'a kaydet
+1. **NO DUPLICATE PHOTOS** - Use get_random_unused_photo, NOT list_s3_products!
+2. **ADD APPOINTMENT LINK** - For Pomandi, EVERY caption must have appointment link!
+3. **ADD EFFECTS** - Use visual-content-mcp for text overlay or price banner
+4. **MAKE REAL POSTS** - Real posts, not tests
+5. **REPORTING IS MANDATORY** - After every post, save S3 key with save_output!
+6. **REPORT ERRORS** - Save error status to agent-outputs
 
-⚠️ **ASLA YAPMA:**
-- list_s3_products kullanma (ayni fotoyu tekrar secer!)
-- pomandi.be kullanma (dogru site: pomandi.com)
-- Randevusuz caption yazma (Pomandi icin)
+⚠️ **NEVER DO:**
+- Use list_s3_products (will pick same photo again!)
+- Use pomandi.be (correct site: pomandi.com)
+- Write caption without appointment link (for Pomandi)
+- Finish without save_output (will cause photo repeats!)
 
-## Ornek Calisma
+## Example Workflow
 
 ```
-1. get_random_unused_photo(brand="pomandi") -> Rastgele kullanilmamis foto sec
-2. view_image -> Fotonun takim elbise oldugunu dogrula
-3. add_text_overlay veya add_price_banner -> Effect ekle
-4. Caption olustur (RANDEVU LINKI ILE!):
+1. get_random_unused_photo(brand="pomandi")
+   -> Result: {"selected": {"key": "products/blue-suit-123.jpg", ...}}
+
+2. view_image(key="products/blue-suit-123.jpg")
+   -> Verify it's a suit image
+
+3. add_text_overlay or add_price_banner -> Add effects
+
+4. Create caption (WITH APPOINTMENT LINK!):
    "Stijlvol pak voor elke gelegenheid.
-
    📅 Maak nu een afspraak: https://pomandi.com/default-channel/appointment?locale=nl
-
    #Pomandi #Herenkostuum"
-5. publish_facebook_photo(brand="pomandi", image_url="...", caption="...")
-6. publish_instagram_photo(brand="pomandi", image_url="...", caption="...")
-7. save_output -> "Published FB:123, IG:456, Image: products/xyz.jpg"
+
+5. publish_facebook_photo(...) -> fb_post_id: 123456
+6. publish_instagram_photo(...) -> ig_media_id: 789012
+
+7. MANDATORY: Save report with save_output:
+   content: "S3 Key: products/blue-suit-123.jpg, FB: 123456, IG: 789012"
 ```
 
-**ONEMLI:** Ciktida hangi foto kullanildigini KAYDET - boylece tekrar secilmez!
+⚠️ **REMEMBER:** save_output MUST contain S3 key (`products/...`)!
 
-## Session Yonetimi
+## Session Management
 
-Baslangic:
+Start:
 ```
 mcp__memory-hub__session_start
   project: "marketing-agents"
   goals: ["Publish feed post to social media"]
 ```
 
-Bitis:
+End:
 ```
 mcp__memory-hub__session_end
   summary: "Published 1 post to Pomandi FB and IG"
