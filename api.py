@@ -23,7 +23,7 @@ logger = logging.getLogger("agent-runner-api")
 app = FastAPI(
     title="Agent Runner API",
     description="Run Claude agents remotely with full conversation logging",
-    version="2.1.0"
+    version="2.2.0"
 )
 
 app.add_middleware(
@@ -250,7 +250,8 @@ async def run_agent(request: RunRequest, background_tasks: BackgroundTasks):
     if request.allowed_tools:
         allowed_tools = request.allowed_tools
     elif agent == "feed-publisher":
-        allowed_tools = "mcp__feed-publisher-mcp__*,mcp__social-media-publish__*"
+        # Include visual-content-mcp for image editing (price banners, text overlays, effects)
+        allowed_tools = "mcp__feed-publisher-mcp__*,mcp__visual-content-mcp__*,mcp__social-media-publish__*"
     else:
         allowed_tools = "*"
     
