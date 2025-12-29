@@ -483,5 +483,147 @@ async def delete_log(filename: str):
     return {"status": "deleted", "file": filename}
 
 
+# Invoice Matching Endpoint - Proxy for expense-tracker
+class InvoiceMatchRequest(BaseModel):
+    transaction: dict  # Transaction details
+    invoices: list     # List of unmatched invoices
+
+
+class InvoiceMatchResponse(BaseModel):
+    success: bool
+    matched: bool = False
+    invoiceId: Optional[int] = None
+    confidence: float = 0
+    reasoning: str = ""
+    warnings: list = []
+    error: Optional[str] = None
+
+
+INVOICE_MATCH_PROMPT = """You are an expert invoice matching assistant for a Belgian company's expense tracking system.
+
+Your job is to analyze a bank transaction and find the best matching invoice from a list of available invoices.
+
+CRITICAL MATCHING RULES:
+1. AMOUNT: The transaction amount and invoice amount MUST match within 1% tolerance. This is the most important criterion.
+2. VENDOR: If the transaction has a vendor name, it should match or be similar to the invoice vendor.
+3. DATE: The invoice date should be within 30 days of the transaction date (before or after).
+4. NEVER match if amounts differ by more than 5% - this is a hard rule.
+
+SCORING:
+- Exact amount match: Very high confidence
+- Amount within 1%: High confidence
+- Amount within 5%: Medium confidence (needs review)
+- Amount differs >5%: NO MATCH
+
+OUTPUT FORMAT - You must respond with valid JSON only:
+{
+  "matched": true or false,
+  "invoiceId": number or null,
+  "confidence": number between 0 and 1,
+  "reasoning": "brief explanation of why this match was selected or why no match was found",
+  "amountDifference": number (percentage difference),
+  "warnings": ["any concerns about this match"]
+}
+
+If no suitable match exists, set matched to false and invoiceId to null.
+Be conservative - it's better to miss a match than to create a wrong one.
+
+TRANSACTION TO MATCH:
+{transaction_json}
+
+AVAILABLE UNMATCHED INVOICES:
+{invoices_json}
+
+Analyze and respond with JSON only."""
+
+
+@app.post("/api/invoice-match", response_model=InvoiceMatchResponse)
+async def match_invoice(request: InvoiceMatchRequest):
+    """Match a transaction with invoices using Claude AI.
+
+    This endpoint acts as a proxy for expense-tracker-app,
+    using Claude Max subscription via CLI.
+    """
+    try:
+        # Build prompt
+        transaction_json = json.dumps(request.transaction, indent=2)
+        invoices_json = json.dumps(request.invoices, indent=2)
+
+        prompt = INVOICE_MATCH_PROMPT.format(
+            transaction_json=transaction_json,
+            invoices_json=invoices_json
+        )
+
+        # Call Claude CLI
+        cmd = [
+            "claude",
+            "--print",  # Just print response, no interactive mode
+            prompt
+        ]
+
+        logger.info(f"[InvoiceMatch] Processing transaction {request.transaction.get('id')}")
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd="/app"
+        )
+
+        if result.returncode != 0:
+            logger.error(f"[InvoiceMatch] CLI error: {result.stderr}")
+            return InvoiceMatchResponse(
+                success=False,
+                error=f"Claude CLI error: {result.stderr[:200]}"
+            )
+
+        response_text = result.stdout.strip()
+        logger.info(f"[InvoiceMatch] Response length: {len(response_text)}")
+
+        # Parse JSON from response
+        json_match = None
+        try:
+            # Try to find JSON in response
+            import re
+            json_pattern = re.search(r'\{[\s\S]*\}', response_text)
+            if json_pattern:
+                json_match = json.loads(json_pattern.group())
+        except json.JSONDecodeError as e:
+            logger.error(f"[InvoiceMatch] JSON parse error: {e}")
+            return InvoiceMatchResponse(
+                success=False,
+                error=f"Failed to parse response: {str(e)}"
+            )
+
+        if not json_match:
+            return InvoiceMatchResponse(
+                success=False,
+                error="No valid JSON in response"
+            )
+
+        return InvoiceMatchResponse(
+            success=True,
+            matched=json_match.get("matched", False),
+            invoiceId=json_match.get("invoiceId"),
+            confidence=json_match.get("confidence", 0),
+            reasoning=json_match.get("reasoning", ""),
+            warnings=json_match.get("warnings", [])
+        )
+
+    except subprocess.TimeoutExpired:
+        logger.error("[InvoiceMatch] Timeout")
+        return InvoiceMatchResponse(
+            success=False,
+            error="Request timed out"
+        )
+    except Exception as e:
+        logger.error(f"[InvoiceMatch] Error: {e}")
+        return InvoiceMatchResponse(
+            success=False,
+            error=str(e)
+        )
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
