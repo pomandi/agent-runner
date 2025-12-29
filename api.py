@@ -516,14 +516,14 @@ SCORING:
 - Amount differs >5%: NO MATCH
 
 OUTPUT FORMAT - You must respond with valid JSON only:
-{
+{{
   "matched": true or false,
   "invoiceId": number or null,
   "confidence": number between 0 and 1,
   "reasoning": "brief explanation of why this match was selected or why no match was found",
   "amountDifference": number (percentage difference),
   "warnings": ["any concerns about this match"]
-}
+}}
 
 If no suitable match exists, set matched to false and invoiceId to null.
 Be conservative - it's better to miss a match than to create a wrong one.
