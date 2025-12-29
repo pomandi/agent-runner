@@ -743,15 +743,18 @@ async def extract_invoice(request: InvoiceExtractRequest):
 
         try:
             # Use Claude CLI with the PDF file
-            # Claude can read PDFs directly with the file path
+            # Claude CLI reads files when they're passed as arguments after the prompt
+            # Using format: claude --print "prompt" /path/to/file.pdf
+            full_prompt = f"{INVOICE_EXTRACT_PROMPT}\n\nPlease analyze the invoice PDF file attached."
+
             cmd = [
                 "claude",
                 "--print",
-                "-p", INVOICE_EXTRACT_PROMPT,
+                "-p", full_prompt,
                 tmp_path  # Pass the PDF file as an attachment
             ]
 
-            logger.info(f"[InvoiceExtract] Running Claude CLI with PDF")
+            logger.info(f"[InvoiceExtract] Running Claude CLI with PDF: {tmp_path}")
 
             result = subprocess.run(
                 cmd,
@@ -760,6 +763,13 @@ async def extract_invoice(request: InvoiceExtractRequest):
                 timeout=120,  # 2 minutes for PDF processing
                 cwd="/app"
             )
+
+            # Log the raw response for debugging
+            logger.info(f"[InvoiceExtract] CLI returncode: {result.returncode}")
+            if result.stdout:
+                logger.info(f"[InvoiceExtract] Raw stdout (first 500): {result.stdout[:500]}")
+            if result.stderr:
+                logger.info(f"[InvoiceExtract] Raw stderr: {result.stderr[:200]}")
 
             if result.returncode != 0:
                 logger.error(f"[InvoiceExtract] CLI returncode: {result.returncode}")
