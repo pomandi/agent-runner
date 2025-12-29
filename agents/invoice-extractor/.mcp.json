@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "expense-tracker": {
+      "command": "python3",
+      "args": ["/app/mcp-servers/expense-tracker-mcp/server.py"],
+      "env": {
+        "EXPENSE_TRACKER_API_URL": "http://yw44sk08wwokcws4s88gcgs0.91.98.235.81.sslip.io"
+      }
+    }
+  }
+}
