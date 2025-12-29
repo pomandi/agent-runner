@@ -641,5 +641,201 @@ async def match_invoice(request: InvoiceMatchRequest):
         )
 
 
+# Invoice Extraction Endpoint - Extract data from PDF invoices
+class InvoiceExtractRequest(BaseModel):
+    pdf_url: str  # URL to the PDF file (Cloudflare R2)
+    invoice_id: Optional[int] = None  # Optional invoice ID for logging
+
+
+class InvoiceExtractResponse(BaseModel):
+    success: bool
+    invoice_number: Optional[str] = None
+    invoice_date: Optional[str] = None  # YYYY-MM-DD format
+    total_amount: Optional[float] = None
+    subtotal: Optional[float] = None
+    vat_amount: Optional[float] = None
+    vat_rate: Optional[float] = None
+    vendor_name: Optional[str] = None
+    vendor_address: Optional[str] = None
+    vendor_vat_number: Optional[str] = None
+    currency: str = "EUR"
+    line_items: list = []
+    raw_text: Optional[str] = None
+    error: Optional[str] = None
+
+
+INVOICE_EXTRACT_PROMPT = """You are an expert invoice data extractor for a Belgian company's expense tracking system.
+
+Analyze the provided invoice document and extract all relevant information.
+
+EXTRACTION RULES:
+1. AMOUNTS: Extract exact amounts including decimals. Look for:
+   - Total amount (incl. VAT) - this is the most important
+   - Subtotal (excl. VAT)
+   - VAT amount
+   - VAT rate (usually 21%, 6%, or 0% in Belgium)
+
+2. DATES: Extract invoice date in YYYY-MM-DD format
+
+3. INVOICE NUMBER: Look for "Invoice", "Facture", "Factuur", "Invoice No", "Factuurnummer", etc.
+
+4. VENDOR INFO:
+   - Company name
+   - Address
+   - VAT number (BTW-nummer, TVA, VAT)
+
+5. LINE ITEMS: If visible, extract individual items with description and amount
+
+OUTPUT FORMAT - Respond with valid JSON only:
+{{
+  "invoice_number": "string or null",
+  "invoice_date": "YYYY-MM-DD or null",
+  "total_amount": number or null,
+  "subtotal": number or null,
+  "vat_amount": number or null,
+  "vat_rate": number or null (e.g., 21 for 21%),
+  "vendor_name": "string or null",
+  "vendor_address": "string or null",
+  "vendor_vat_number": "string or null",
+  "currency": "EUR" (or other if clearly stated),
+  "line_items": [
+    {{"description": "string", "quantity": number, "unit_price": number, "total": number}}
+  ],
+  "raw_text": "brief summary of key visible text"
+}}
+
+Be precise with numbers - financial accuracy is critical.
+If a value cannot be determined with confidence, set it to null."""
+
+
+@app.post("/api/invoice-extract", response_model=InvoiceExtractResponse)
+async def extract_invoice(request: InvoiceExtractRequest):
+    """Extract data from an invoice PDF using Claude AI vision.
+
+    This endpoint:
+    1. Downloads the PDF from the provided URL
+    2. Sends it to Claude for analysis
+    3. Returns structured invoice data
+    """
+    import tempfile
+    import httpx
+    import base64
+
+    try:
+        logger.info(f"[InvoiceExtract] Processing PDF: {request.pdf_url}")
+
+        # Download the PDF
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(request.pdf_url)
+            if response.status_code != 200:
+                return InvoiceExtractResponse(
+                    success=False,
+                    error=f"Failed to download PDF: HTTP {response.status_code}"
+                )
+            pdf_content = response.content
+
+        logger.info(f"[InvoiceExtract] Downloaded PDF: {len(pdf_content)} bytes")
+
+        # Save to temp file
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(pdf_content)
+            tmp_path = tmp.name
+
+        try:
+            # Use Claude CLI with the PDF file
+            # Claude can read PDFs directly with the file path
+            cmd = [
+                "claude",
+                "--print",
+                "-p", INVOICE_EXTRACT_PROMPT,
+                tmp_path  # Pass the PDF file as an attachment
+            ]
+
+            logger.info(f"[InvoiceExtract] Running Claude CLI with PDF")
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,  # 2 minutes for PDF processing
+                cwd="/app"
+            )
+
+            if result.returncode != 0:
+                logger.error(f"[InvoiceExtract] CLI returncode: {result.returncode}")
+                logger.error(f"[InvoiceExtract] CLI stderr: {result.stderr}")
+                logger.error(f"[InvoiceExtract] CLI stdout: {result.stdout[:500] if result.stdout else 'empty'}")
+                return InvoiceExtractResponse(
+                    success=False,
+                    error=f"Claude CLI error (rc={result.returncode}): {result.stderr[:200] or result.stdout[:200]}"
+                )
+
+            response_text = result.stdout.strip()
+            logger.info(f"[InvoiceExtract] Response length: {len(response_text)}")
+
+            # Parse JSON from response
+            try:
+                start_idx = response_text.find('{')
+                end_idx = response_text.rfind('}')
+
+                if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                    json_str = response_text[start_idx:end_idx + 1]
+                    extracted = json.loads(json_str)
+                else:
+                    return InvoiceExtractResponse(
+                        success=False,
+                        error="No valid JSON in response"
+                    )
+            except json.JSONDecodeError as e:
+                logger.error(f"[InvoiceExtract] JSON parse error: {e}")
+                return InvoiceExtractResponse(
+                    success=False,
+                    error=f"Failed to parse response: {str(e)}"
+                )
+
+            return InvoiceExtractResponse(
+                success=True,
+                invoice_number=extracted.get("invoice_number"),
+                invoice_date=extracted.get("invoice_date"),
+                total_amount=extracted.get("total_amount"),
+                subtotal=extracted.get("subtotal"),
+                vat_amount=extracted.get("vat_amount"),
+                vat_rate=extracted.get("vat_rate"),
+                vendor_name=extracted.get("vendor_name"),
+                vendor_address=extracted.get("vendor_address"),
+                vendor_vat_number=extracted.get("vendor_vat_number"),
+                currency=extracted.get("currency", "EUR"),
+                line_items=extracted.get("line_items", []),
+                raw_text=extracted.get("raw_text")
+            )
+
+        finally:
+            # Clean up temp file
+            import os
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    except httpx.TimeoutException:
+        logger.error("[InvoiceExtract] Download timeout")
+        return InvoiceExtractResponse(
+            success=False,
+            error="PDF download timed out"
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("[InvoiceExtract] Claude timeout")
+        return InvoiceExtractResponse(
+            success=False,
+            error="PDF processing timed out"
+        )
+    except Exception as e:
+        logger.error(f"[InvoiceExtract] Error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return InvoiceExtractResponse(
+            success=False,
+            error=str(e)
+        )
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
