@@ -3,6 +3,7 @@
 Agent Runner HTTP API
 Simple API to run agents remotely without SSH
 Enhanced with full conversation logging
+NOW WITH CLAUDE AGENT SDK SUPPORT!
 """
 import asyncio
 import os
@@ -16,6 +17,14 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
+
+# Claude Agent SDK
+try:
+    from claude_agent_sdk import query, ClaudeAgentOptions
+    SDK_AVAILABLE = True
+except ImportError:
+    SDK_AVAILABLE = False
+    logging.warning("claude-agent-sdk not installed, falling back to CLI")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("agent-runner-api")
@@ -51,6 +60,7 @@ class RunRequest(BaseModel):
     task: Optional[str] = None   # Uses AGENT_TASK env if not provided
     allowed_tools: Optional[str] = None  # MCP tools pattern
     verbose: Optional[bool] = True  # Enable verbose logging
+    use_sdk: Optional[bool] = True  # Use SDK (True) or CLI (False)
 
 
 class RunResponse(BaseModel):
@@ -204,6 +214,100 @@ def run_agent_sync(agent: str, task: str, allowed_tools: str, log_file: Path, ve
         current_run["running"] = False
 
 
+async def run_agent_sdk(agent: str, task: str, allowed_tools: str, log_file: Path):
+    """Run agent using Claude Agent SDK (async, native Python)."""
+    global current_run
+
+    if not SDK_AVAILABLE:
+        logger.error("SDK not available, cannot run")
+        return
+
+    try:
+        current_run["running"] = True
+        current_run["agent"] = agent
+        current_run["task"] = task
+        current_run["started_at"] = datetime.now().isoformat()
+        current_run["log_file"] = str(log_file)
+        current_run["mode"] = "sdk"
+
+        # Parse allowed tools
+        tools_list = [t.strip() for t in allowed_tools.split(",") if t.strip()]
+
+        # Configure SDK options
+        options = ClaudeAgentOptions(
+            cwd=f"/app/agents/{agent}" if Path(f"/app/agents/{agent}").exists() else "/app",
+            allowed_tools=tools_list,
+            max_turns=50
+        )
+
+        logger.info(f"[SDK] Starting agent: {agent}")
+        logger.info(f"[SDK] Task: {task}")
+        logger.info(f"[SDK] Tools: {tools_list}")
+
+        message_count = 0
+        tool_calls = 0
+
+        with open(log_file, "w") as f:
+            f.write("=" * 60 + "\n")
+            f.write("   AGENT RUN - SDK MODE\n")
+            f.write("=" * 60 + "\n")
+            f.write(f"Agent: {agent}\n")
+            f.write(f"Task: {task}\n")
+            f.write(f"Time: {datetime.now().isoformat()}\n")
+            f.write(f"Mode: SDK (claude-agent-sdk)\n")
+            f.write(f"Allowed Tools: {allowed_tools}\n")
+            f.write("=" * 60 + "\n\n")
+            f.flush()
+
+            # Run with SDK - native async iteration
+            async for message in query(prompt=task, options=options):
+                message_count += 1
+
+                # Handle different message types
+                if hasattr(message, 'content'):
+                    for block in message.content:
+                        if hasattr(block, 'text'):
+                            f.write(f"\n📝 ASSISTANT:\n{block.text}\n")
+                            f.flush()
+                        elif hasattr(block, 'type') and block.type == 'tool_use':
+                            tool_calls += 1
+                            tool_name = getattr(block, 'name', 'unknown')
+                            tool_input = getattr(block, 'input', {})
+                            f.write(f"\n🔧 TOOL CALL: {tool_name}\n")
+                            f.write(f"   Input: {json.dumps(tool_input, indent=2)}\n")
+                            f.flush()
+                        elif hasattr(block, 'type') and block.type == 'tool_result':
+                            result = getattr(block, 'content', '')
+                            if isinstance(result, str) and len(result) > 500:
+                                result = result[:500] + "... (truncated)"
+                            f.write(f"\n📥 TOOL RESULT:\n{result}\n")
+                            f.flush()
+
+                # Log progress
+                if message_count % 5 == 0:
+                    logger.info(f"[SDK] Progress: {message_count} messages, {tool_calls} tool calls")
+
+            f.write("\n" + "=" * 60 + "\n")
+            f.write("   RUN SUMMARY\n")
+            f.write("=" * 60 + "\n")
+            f.write(f"Mode: SDK\n")
+            f.write(f"Messages: {message_count}\n")
+            f.write(f"Tool calls: {tool_calls}\n")
+            f.write(f"Finished: {datetime.now().isoformat()}\n")
+            f.write("=" * 60 + "\n")
+
+        logger.info(f"[SDK] Agent completed: {message_count} messages, {tool_calls} tool calls")
+
+    except Exception as e:
+        logger.error(f"[SDK] Agent error: {e}")
+        with open(log_file, "a") as f:
+            f.write(f"\n❌ ERROR: {str(e)}\n")
+            import traceback
+            f.write(f"\n{traceback.format_exc()}\n")
+    finally:
+        current_run["running"] = False
+
+
 @app.get("/health")
 async def health():
     """Health check endpoint."""
@@ -214,12 +318,15 @@ async def health():
 async def status():
     """Get current agent status."""
     creds_exist = Path("/root/.claude/.credentials.json").exists()
-    
+
     return {
         "container": "agent-runner",
+        "version": "3.0.0",
         "agent_name": os.getenv("AGENT_NAME", "unknown"),
         "schedule": os.getenv("AGENT_SCHEDULE", "none"),
         "credentials_found": creds_exist,
+        "sdk_available": SDK_AVAILABLE,
+        "default_mode": "sdk" if SDK_AVAILABLE else "cli",
         "current_run": current_run,
         "timestamp": datetime.now().isoformat()
     }
@@ -227,25 +334,33 @@ async def status():
 
 @app.post("/run", response_model=RunResponse)
 async def run_agent(request: RunRequest, background_tasks: BackgroundTasks):
-    """Run an agent with full conversation logging."""
-    
+    """Run an agent with full conversation logging.
+
+    Supports two modes:
+    - SDK mode (default): Uses claude-agent-sdk for native Python async
+    - CLI mode: Uses subprocess to call claude CLI (fallback)
+
+    Set use_sdk=false to use CLI mode.
+    """
+
     if current_run["running"]:
         raise HTTPException(
             status_code=409,
             detail=f"Agent already running: {current_run['agent']}"
         )
-    
+
     # Check credentials
     if not Path("/root/.claude/.credentials.json").exists():
         raise HTTPException(
             status_code=503,
             detail="Claude credentials not found. Copy credentials first."
         )
-    
+
     agent = request.agent or os.getenv("AGENT_NAME", "feed-publisher")
     task = request.task or os.getenv("AGENT_TASK", "Run the agent task")
     verbose = request.verbose if request.verbose is not None else True
-    
+    use_sdk = request.use_sdk if request.use_sdk is not None else True
+
     # Determine allowed tools
     if request.allowed_tools:
         allowed_tools = request.allowed_tools
@@ -254,16 +369,23 @@ async def run_agent(request: RunRequest, background_tasks: BackgroundTasks):
         allowed_tools = "mcp__feed-publisher-mcp__*,mcp__visual-content-mcp__*,mcp__social-media-publish__*"
     else:
         allowed_tools = "*"
-    
+
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     log_file = LOGS_DIR / f"{agent}-{run_id}.log"
-    
-    # Run in background
-    background_tasks.add_task(run_agent_sync, agent, task, allowed_tools, log_file, verbose)
-    
+
+    # Choose execution mode
+    if use_sdk and SDK_AVAILABLE:
+        # SDK Mode - async, native Python
+        asyncio.create_task(run_agent_sdk(agent, task, allowed_tools, log_file))
+        mode = "sdk"
+    else:
+        # CLI Mode - subprocess fallback
+        background_tasks.add_task(run_agent_sync, agent, task, allowed_tools, log_file, verbose)
+        mode = "cli"
+
     return RunResponse(
         status="started",
-        message=f"Agent {agent} started with verbose logging",
+        message=f"Agent {agent} started in {mode.upper()} mode",
         run_id=run_id,
         agent=agent,
         task=task
