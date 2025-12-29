@@ -743,21 +743,23 @@ async def extract_invoice(request: InvoiceExtractRequest):
 
         try:
             # Use Claude CLI with the PDF file
-            # Claude CLI reads files when they're passed as arguments after the prompt
-            # Using format: claude --print "prompt" /path/to/file.pdf
-            full_prompt = f"{INVOICE_EXTRACT_PROMPT}\n\nPlease analyze the invoice PDF file attached."
+            # The correct syntax is: claude --print "prompt about file.pdf" file.pdf
+            # Files are passed as positional arguments, prompt references them
+            full_prompt = f"Please analyze the invoice PDF file I'm providing and extract data. {INVOICE_EXTRACT_PROMPT}"
 
+            # Pass file first, then prompt via stdin
             cmd = [
                 "claude",
                 "--print",
-                "-p", full_prompt,
-                tmp_path  # Pass the PDF file as an attachment
+                tmp_path,  # File as positional argument
             ]
 
             logger.info(f"[InvoiceExtract] Running Claude CLI with PDF: {tmp_path}")
 
+            # Pass prompt via stdin
             result = subprocess.run(
                 cmd,
+                input=full_prompt,
                 capture_output=True,
                 text=True,
                 timeout=120,  # 2 minutes for PDF processing
