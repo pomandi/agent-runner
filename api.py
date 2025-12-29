@@ -554,14 +554,15 @@ async def match_invoice(request: InvoiceMatchRequest):
             invoices_json=invoices_json
         )
 
-        # Call Claude CLI
+        # Call Claude CLI - pass prompt via stdin to avoid command line length limits
         cmd = [
             "claude",
             "--print",  # Just print response, no interactive mode
-            prompt
+            "-p", prompt  # Pass prompt with -p flag
         ]
 
         logger.info(f"[InvoiceMatch] Processing transaction {request.transaction.get('id')}")
+        logger.info(f"[InvoiceMatch] Prompt length: {len(prompt)} chars")
 
         result = subprocess.run(
             cmd,
@@ -572,10 +573,12 @@ async def match_invoice(request: InvoiceMatchRequest):
         )
 
         if result.returncode != 0:
-            logger.error(f"[InvoiceMatch] CLI error: {result.stderr}")
+            logger.error(f"[InvoiceMatch] CLI returncode: {result.returncode}")
+            logger.error(f"[InvoiceMatch] CLI stderr: {result.stderr}")
+            logger.error(f"[InvoiceMatch] CLI stdout: {result.stdout[:500] if result.stdout else 'empty'}")
             return InvoiceMatchResponse(
                 success=False,
-                error=f"Claude CLI error: {result.stderr[:200]}"
+                error=f"Claude CLI error (rc={result.returncode}): {result.stderr[:100] or result.stdout[:100]}"
             )
 
         response_text = result.stdout.strip()
