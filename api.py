@@ -580,17 +580,30 @@ async def match_invoice(request: InvoiceMatchRequest):
 
         response_text = result.stdout.strip()
         logger.info(f"[InvoiceMatch] Response length: {len(response_text)}")
+        logger.debug(f"[InvoiceMatch] Raw response: {response_text[:500]}")
 
         # Parse JSON from response
         json_match = None
         try:
-            # Try to find JSON in response
+            # Try to find JSON in response - look for the first { to the last }
             import re
-            json_pattern = re.search(r'\{[\s\S]*\}', response_text)
-            if json_pattern:
-                json_match = json.loads(json_pattern.group())
+            # Find all potential JSON objects
+            start_idx = response_text.find('{')
+            end_idx = response_text.rfind('}')
+
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                json_str = response_text[start_idx:end_idx + 1]
+                # Clean up the JSON string - remove any control characters
+                json_str = json_str.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+                # Remove extra whitespace
+                json_str = ' '.join(json_str.split())
+                logger.info(f"[InvoiceMatch] Extracted JSON: {json_str[:200]}")
+                json_match = json.loads(json_str)
+            else:
+                logger.error(f"[InvoiceMatch] No JSON braces found in response")
         except json.JSONDecodeError as e:
             logger.error(f"[InvoiceMatch] JSON parse error: {e}")
+            logger.error(f"[InvoiceMatch] JSON string was: {json_str[:200] if 'json_str' in dir() else 'N/A'}")
             return InvoiceMatchResponse(
                 success=False,
                 error=f"Failed to parse response: {str(e)}"
