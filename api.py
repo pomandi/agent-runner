@@ -710,16 +710,17 @@ If a value cannot be determined with confidence, set it to null."""
 
 @app.post("/api/invoice-extract", response_model=InvoiceExtractResponse)
 async def extract_invoice(request: InvoiceExtractRequest):
-    """Extract data from an invoice PDF using Claude AI vision.
+    """Extract data from an invoice PDF using Claude AI.
 
     This endpoint:
     1. Downloads the PDF from the provided URL
-    2. Sends it to Claude for analysis
-    3. Returns structured invoice data
+    2. Extracts text from PDF using pypdf
+    3. Sends text to Claude for structured extraction
+    4. Returns structured invoice data
     """
     import tempfile
     import httpx
-    import base64
+    from io import BytesIO
 
     try:
         logger.info(f"[InvoiceExtract] Processing PDF: {request.pdf_url}")
@@ -736,96 +737,111 @@ async def extract_invoice(request: InvoiceExtractRequest):
 
         logger.info(f"[InvoiceExtract] Downloaded PDF: {len(pdf_content)} bytes")
 
-        # Save to temp file
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(pdf_content)
-            tmp_path = tmp.name
-
+        # Extract text from PDF using pypdf
         try:
-            # Use Claude CLI with the PDF file
-            # The correct syntax is: claude --print "prompt about file.pdf" file.pdf
-            # Files are passed as positional arguments, prompt references them
-            full_prompt = f"Please analyze the invoice PDF file I'm providing and extract data. {INVOICE_EXTRACT_PROMPT}"
+            from pypdf import PdfReader
+            reader = PdfReader(BytesIO(pdf_content))
+            pdf_text = ""
+            for page_num, page in enumerate(reader.pages):
+                page_text = page.extract_text()
+                if page_text:
+                    pdf_text += f"\n--- Page {page_num + 1} ---\n{page_text}"
 
-            # Pass file first, then prompt via stdin
-            cmd = [
-                "claude",
-                "--print",
-                tmp_path,  # File as positional argument
-            ]
+            logger.info(f"[InvoiceExtract] Extracted {len(pdf_text)} chars from {len(reader.pages)} pages")
 
-            logger.info(f"[InvoiceExtract] Running Claude CLI with PDF: {tmp_path}")
-
-            # Pass prompt via stdin
-            result = subprocess.run(
-                cmd,
-                input=full_prompt,
-                capture_output=True,
-                text=True,
-                timeout=120,  # 2 minutes for PDF processing
-                cwd="/app"
-            )
-
-            # Log the raw response for debugging
-            logger.info(f"[InvoiceExtract] CLI returncode: {result.returncode}")
-            if result.stdout:
-                logger.info(f"[InvoiceExtract] Raw stdout (first 500): {result.stdout[:500]}")
-            if result.stderr:
-                logger.info(f"[InvoiceExtract] Raw stderr: {result.stderr[:200]}")
-
-            if result.returncode != 0:
-                logger.error(f"[InvoiceExtract] CLI returncode: {result.returncode}")
-                logger.error(f"[InvoiceExtract] CLI stderr: {result.stderr}")
-                logger.error(f"[InvoiceExtract] CLI stdout: {result.stdout[:500] if result.stdout else 'empty'}")
+            if not pdf_text.strip():
                 return InvoiceExtractResponse(
                     success=False,
-                    error=f"Claude CLI error (rc={result.returncode}): {result.stderr[:200] or result.stdout[:200]}"
+                    error="PDF contains no extractable text (may be image-based)"
                 )
-
-            response_text = result.stdout.strip()
-            logger.info(f"[InvoiceExtract] Response length: {len(response_text)}")
-
-            # Parse JSON from response
-            try:
-                start_idx = response_text.find('{')
-                end_idx = response_text.rfind('}')
-
-                if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                    json_str = response_text[start_idx:end_idx + 1]
-                    extracted = json.loads(json_str)
-                else:
-                    return InvoiceExtractResponse(
-                        success=False,
-                        error="No valid JSON in response"
-                    )
-            except json.JSONDecodeError as e:
-                logger.error(f"[InvoiceExtract] JSON parse error: {e}")
-                return InvoiceExtractResponse(
-                    success=False,
-                    error=f"Failed to parse response: {str(e)}"
-                )
-
+        except Exception as e:
+            logger.error(f"[InvoiceExtract] PDF extraction error: {e}")
             return InvoiceExtractResponse(
-                success=True,
-                invoice_number=extracted.get("invoice_number"),
-                invoice_date=extracted.get("invoice_date"),
-                total_amount=extracted.get("total_amount"),
-                subtotal=extracted.get("subtotal"),
-                vat_amount=extracted.get("vat_amount"),
-                vat_rate=extracted.get("vat_rate"),
-                vendor_name=extracted.get("vendor_name"),
-                vendor_address=extracted.get("vendor_address"),
-                vendor_vat_number=extracted.get("vendor_vat_number"),
-                currency=extracted.get("currency", "EUR"),
-                line_items=extracted.get("line_items", []),
-                raw_text=extracted.get("raw_text")
+                success=False,
+                error=f"PDF text extraction failed: {str(e)}"
             )
 
-        finally:
-            # Clean up temp file
-            import os
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+        # Build prompt with extracted text
+        full_prompt = f"""Here is the text extracted from an invoice PDF. Please analyze it and extract structured data.
+
+EXTRACTED PDF TEXT:
+{pdf_text[:8000]}
+
+{INVOICE_EXTRACT_PROMPT}
+
+Respond with JSON only."""
+
+        # Call Claude CLI with the text prompt
+        cmd = [
+            "claude",
+            "--print",
+            "-p", full_prompt
+        ]
+
+        logger.info(f"[InvoiceExtract] Running Claude CLI with {len(full_prompt)} char prompt")
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            cwd="/app"
+        )
+
+        # Log the raw response for debugging
+        logger.info(f"[InvoiceExtract] CLI returncode: {result.returncode}")
+        if result.stdout:
+            logger.info(f"[InvoiceExtract] Raw stdout (first 500): {result.stdout[:500]}")
+        if result.stderr:
+            logger.info(f"[InvoiceExtract] Raw stderr: {result.stderr[:200]}")
+
+        if result.returncode != 0:
+            logger.error(f"[InvoiceExtract] CLI returncode: {result.returncode}")
+            logger.error(f"[InvoiceExtract] CLI stderr: {result.stderr}")
+            logger.error(f"[InvoiceExtract] CLI stdout: {result.stdout[:500] if result.stdout else 'empty'}")
+            return InvoiceExtractResponse(
+                success=False,
+                error=f"Claude CLI error (rc={result.returncode}): {result.stderr[:200] or result.stdout[:200]}"
+            )
+
+        response_text = result.stdout.strip()
+        logger.info(f"[InvoiceExtract] Response length: {len(response_text)}")
+
+        # Parse JSON from response
+        try:
+            start_idx = response_text.find('{')
+            end_idx = response_text.rfind('}')
+
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                json_str = response_text[start_idx:end_idx + 1]
+                extracted = json.loads(json_str)
+            else:
+                return InvoiceExtractResponse(
+                    success=False,
+                    error=f"No valid JSON in response. Response was: {response_text[:300]}"
+                )
+        except json.JSONDecodeError as e:
+            logger.error(f"[InvoiceExtract] JSON parse error: {e}")
+            return InvoiceExtractResponse(
+                success=False,
+                error=f"Failed to parse response: {str(e)}"
+            )
+
+        return InvoiceExtractResponse(
+            success=True,
+            invoice_number=extracted.get("invoice_number"),
+            invoice_date=extracted.get("invoice_date"),
+            total_amount=extracted.get("total_amount"),
+            subtotal=extracted.get("subtotal"),
+            vat_amount=extracted.get("vat_amount"),
+            vat_rate=extracted.get("vat_rate"),
+            vendor_name=extracted.get("vendor_name"),
+            vendor_address=extracted.get("vendor_address"),
+            vendor_vat_number=extracted.get("vendor_vat_number"),
+            currency=extracted.get("currency", "EUR"),
+            line_items=extracted.get("line_items", []),
+            raw_text=pdf_text[:1000] if pdf_text else None
+        )
 
     except httpx.TimeoutException:
         logger.error("[InvoiceExtract] Download timeout")
