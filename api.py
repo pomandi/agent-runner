@@ -53,6 +53,58 @@ def is_image_type(file_type: str) -> bool:
     return file_type.startswith('image/')
 
 
+def detect_heic_format(file_content: bytes) -> bool:
+    """
+    Detect if file content is actually HEIC/HEIF format by checking magic bytes.
+    iPhone often saves HEIC images with .jpg extension.
+    """
+    # HEIC/HEIF files have 'ftyp' box with specific brands
+    # Check for 'ftyp' at byte 4-8 and HEIC brand patterns
+    if len(file_content) < 12:
+        return False
+
+    # HEIF/HEIC starts with ftyp box
+    if file_content[4:8] == b'ftyp':
+        # Check for HEIC/HEIF brands
+        brand = file_content[8:12]
+        heic_brands = [b'heic', b'heix', b'hevc', b'hevx', b'mif1', b'msf1']
+        if brand in heic_brands:
+            return True
+
+    return False
+
+
+def convert_heic_to_jpeg(file_content: bytes) -> bytes:
+    """
+    Convert HEIC/HEIF image to JPEG format.
+    Returns the converted JPEG bytes.
+    """
+    import io
+    from PIL import Image
+
+    try:
+        # pillow-heif registers itself with Pillow automatically when imported
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+
+        # Open HEIC image
+        img = Image.open(io.BytesIO(file_content))
+
+        # Convert to RGB if necessary (HEIC might have alpha channel)
+        if img.mode in ('RGBA', 'LA', 'P'):
+            img = img.convert('RGB')
+
+        # Save as JPEG
+        output = io.BytesIO()
+        img.save(output, format='JPEG', quality=95)
+        output.seek(0)
+
+        return output.read()
+    except Exception as e:
+        logger.error(f"[HEIC] Failed to convert HEIC to JPEG: {e}")
+        raise
+
+
 app = FastAPI(
     title="Agent Runner API",
     description="Run Claude agents remotely with full conversation logging",
@@ -740,7 +792,7 @@ async def extract_invoice(request: InvoiceExtractRequest):
     1. Downloads the file from the provided URL
     2. Detects file type (PDF or image)
     3. For PDFs: Extracts text using pypdf, sends to Claude CLI
-    4. For Images: Uses Claude CLI with Read tool (vision)
+    4. For Images: Uses Anthropic SDK with vision capability
     5. Returns structured invoice data
     """
     import httpx
@@ -778,6 +830,20 @@ async def extract_invoice(request: InvoiceExtractRequest):
             import tempfile
 
             logger.info(f"[InvoiceExtract] Processing as IMAGE with Claude CLI")
+
+            # Check if the image is actually HEIC (iPhone often saves HEIC as .jpg)
+            if detect_heic_format(file_content):
+                logger.info(f"[InvoiceExtract] Detected HEIC format (iPhone image), converting to JPEG...")
+                try:
+                    file_content = convert_heic_to_jpeg(file_content)
+                    file_type = 'image/jpeg'
+                    logger.info(f"[InvoiceExtract] HEIC converted to JPEG: {len(file_content)} bytes")
+                except Exception as heic_error:
+                    logger.error(f"[InvoiceExtract] HEIC conversion failed: {heic_error}")
+                    return InvoiceExtractResponse(
+                        success=False,
+                        error=f"Failed to convert HEIC image: {str(heic_error)}"
+                    )
 
             # Determine file extension
             if 'jpeg' in file_type or 'jpg' in file_type:
