@@ -708,6 +708,21 @@ Be precise with numbers - financial accuracy is critical.
 If a value cannot be determined with confidence, set it to null."""
 
 
+def sanitize_text(text: str) -> str:
+    """Remove null bytes and other problematic characters from text.
+    
+    This is needed because subprocess.run() cannot handle null bytes in arguments.
+    """
+    if not text:
+        return ""
+    # Remove null bytes
+    text = text.replace('\x00', '')
+    # Remove other control characters that might cause issues (except newline, tab)
+    import re
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    return text
+
+
 @app.post("/api/invoice-extract", response_model=InvoiceExtractResponse)
 async def extract_invoice(request: InvoiceExtractRequest):
     """Extract data from an invoice PDF using Claude AI.
@@ -754,6 +769,11 @@ async def extract_invoice(request: InvoiceExtractRequest):
                     success=False,
                     error="PDF contains no extractable text (may be image-based)"
                 )
+            
+            # Sanitize the extracted text to remove null bytes and control characters
+            pdf_text = sanitize_text(pdf_text)
+            logger.info(f"[InvoiceExtract] Sanitized text: {len(pdf_text)} chars")
+            
         except Exception as e:
             logger.error(f"[InvoiceExtract] PDF extraction error: {e}")
             return InvoiceExtractResponse(
