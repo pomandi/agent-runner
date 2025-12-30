@@ -105,6 +105,7 @@ def convert_heic_to_jpeg(file_content: bytes) -> bytes:
         raise
 
 
+
 app = FastAPI(
     title="Agent Runner API",
     description="Run Claude agents remotely with full conversation logging",
@@ -844,6 +845,7 @@ async def extract_invoice(request: InvoiceExtractRequest):
                         success=False,
                         error=f"Failed to convert HEIC image: {str(heic_error)}"
                     )
+
 
             # Determine file extension
             if 'jpeg' in file_type or 'jpg' in file_type:
