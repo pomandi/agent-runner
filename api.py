@@ -10,8 +10,6 @@ import os
 import subprocess
 import logging
 import json
-import base64
-import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -19,6 +17,7 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
+
 
 # Claude Agent SDK
 try:
@@ -31,10 +30,33 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("agent-runner-api")
 
+
+def get_file_type_from_url(url: str) -> str:
+    """Determine file type from URL extension."""
+    url_lower = url.lower()
+    if any(ext in url_lower for ext in ['.jpg', '.jpeg']):
+        return 'image/jpeg'
+    elif '.png' in url_lower:
+        return 'image/png'
+    elif '.webp' in url_lower:
+        return 'image/webp'
+    elif '.gif' in url_lower:
+        return 'image/gif'
+    elif '.pdf' in url_lower:
+        return 'application/pdf'
+    else:
+        return 'application/pdf'  # Default to PDF if unclear
+
+
+def is_image_type(file_type: str) -> bool:
+    """Check if the file type is an image."""
+    return file_type.startswith('image/')
+
+
 app = FastAPI(
     title="Agent Runner API",
     description="Run Claude agents remotely with full conversation logging",
-    version="2.3.0"
+    version="2.2.0"
 )
 
 app.add_middleware(
@@ -323,7 +345,7 @@ async def status():
 
     return {
         "container": "agent-runner",
-        "version": "3.1.0",
+        "version": "3.0.0",
         "agent_name": os.getenv("AGENT_NAME", "unknown"),
         "schedule": os.getenv("AGENT_SCHEDULE", "none"),
         "credentials_found": creds_exist,
@@ -643,9 +665,9 @@ async def match_invoice(request: InvoiceMatchRequest):
         )
 
 
-# Invoice Extraction Endpoint - Extract data from PDF/Image invoices
+# Invoice Extraction Endpoint - Extract data from PDF invoices
 class InvoiceExtractRequest(BaseModel):
-    pdf_url: str  # URL to the PDF/image file (Cloudflare R2)
+    pdf_url: str  # URL to the PDF file (Cloudflare R2)
     invoice_id: Optional[int] = None  # Optional invoice ID for logging
 
 
@@ -710,149 +732,122 @@ Be precise with numbers - financial accuracy is critical.
 If a value cannot be determined with confidence, set it to null."""
 
 
-def sanitize_text(text: str) -> str:
-    """Remove null bytes and other problematic characters from text.
-    
-    This is needed because subprocess.run() cannot handle null bytes in arguments.
-    """
-    if not text:
-        return ""
-    # Remove null bytes
-    text = text.replace('\x00', '')
-    # Remove other control characters that might cause issues (except newline, tab)
-    import re
-    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
-    return text
-
-
-def get_file_type_from_url(url: str) -> str:
-    """Determine file type from URL extension."""
-    url_lower = url.lower()
-    if any(ext in url_lower for ext in ['.jpg', '.jpeg']):
-        return 'image/jpeg'
-    elif '.png' in url_lower:
-        return 'image/png'
-    elif '.webp' in url_lower:
-        return 'image/webp'
-    elif '.gif' in url_lower:
-        return 'image/gif'
-    elif '.pdf' in url_lower:
-        return 'application/pdf'
-    else:
-        # Default to PDF if unclear
-        return 'application/pdf'
-
-
-def get_image_extension(content_type: str) -> str:
-    """Get file extension from content type."""
-    if 'jpeg' in content_type or 'jpg' in content_type:
-        return '.jpg'
-    elif 'png' in content_type:
-        return '.png'
-    elif 'webp' in content_type:
-        return '.webp'
-    elif 'gif' in content_type:
-        return '.gif'
-    return '.jpg'  # default
-
-
 @app.post("/api/invoice-extract", response_model=InvoiceExtractResponse)
 async def extract_invoice(request: InvoiceExtractRequest):
-    """Extract data from an invoice PDF or image using Claude AI.
+    """Extract data from an invoice PDF or IMAGE using Claude AI.
 
     This endpoint:
     1. Downloads the file from the provided URL
-    2. Detects if it's a PDF or image
-    3. For PDFs: Extracts text using pypdf
-    4. For images: Uses Claude vision directly
+    2. Detects file type (PDF or image)
+    3. For PDFs: Extracts text using pypdf, sends to Claude CLI
+    4. For Images: Uses Claude CLI with Read tool (vision)
     5. Returns structured invoice data
     """
     import httpx
     from io import BytesIO
 
     try:
-        logger.info(f"[InvoiceExtract] Processing file: {request.pdf_url}")
+        file_url = request.pdf_url
+        file_type = get_file_type_from_url(file_url)
+        is_image = is_image_type(file_type)
 
-        # Determine file type from URL
-        file_type = get_file_type_from_url(request.pdf_url)
-        logger.info(f"[InvoiceExtract] Detected file type from URL: {file_type}")
+        logger.info(f"[InvoiceExtract] Processing file: {file_url}")
+        logger.info(f"[InvoiceExtract] Detected type: {file_type}, is_image: {is_image}")
 
         # Download the file
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(request.pdf_url)
+            response = await client.get(file_url)
             if response.status_code != 200:
                 return InvoiceExtractResponse(
                     success=False,
                     error=f"Failed to download file: HTTP {response.status_code}"
                 )
             file_content = response.content
-            
+
             # Also check content-type header
             content_type = response.headers.get('content-type', '').lower()
-            if content_type:
-                if 'image' in content_type:
-                    file_type = content_type.split(';')[0].strip()
-                elif 'pdf' in content_type:
-                    file_type = 'application/pdf'
-            
-            logger.info(f"[InvoiceExtract] Content-Type header: {content_type}")
-            logger.info(f"[InvoiceExtract] Final file type: {file_type}")
+            if 'image' in content_type:
+                is_image = True
+                file_type = content_type.split(';')[0].strip()
+                logger.info(f"[InvoiceExtract] Content-Type header indicates image: {file_type}")
 
-        logger.info(f"[InvoiceExtract] Downloaded file: {len(file_content)} bytes")
+        logger.info(f"[InvoiceExtract] Downloaded: {len(file_content)} bytes")
 
-        # Handle based on file type
-        is_image = file_type.startswith('image/')
-        
         if is_image:
-            # IMAGE FILE - Use Claude vision
-            logger.info(f"[InvoiceExtract] Processing as IMAGE")
-            
+            # ============ IMAGE EXTRACTION (Using Claude CLI with Read tool) ============
+            import tempfile
+
+            logger.info(f"[InvoiceExtract] Processing as IMAGE with Claude CLI")
+
+            # Determine file extension
+            if 'jpeg' in file_type or 'jpg' in file_type:
+                ext = '.jpg'
+            elif 'png' in file_type:
+                ext = '.png'
+            elif 'webp' in file_type:
+                ext = '.webp'
+            elif 'gif' in file_type:
+                ext = '.gif'
+            else:
+                ext = '.jpg'  # Default
+
             # Save image to temp file
-            ext = get_image_extension(file_type)
-            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp_file:
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False, dir='/tmp') as tmp_file:
                 tmp_file.write(file_content)
                 tmp_path = tmp_file.name
-            
-            logger.info(f"[InvoiceExtract] Saved image to temp file: {tmp_path}")
-            
-            try:
-                # Build prompt for image analysis
-                image_prompt = f"""Analyze this invoice image and extract structured data.
+
+            logger.info(f"[InvoiceExtract] Saved image to: {tmp_path}")
+
+            # Build prompt - Claude CLI will use Read tool to view the image
+            image_prompt = f"""Read and analyze the invoice image at this path: {tmp_path}
 
 {INVOICE_EXTRACT_PROMPT}
 
-Respond with JSON only."""
+IMPORTANT: First read the image file using the Read tool, then analyze it and respond with JSON only."""
 
-                # Call Claude CLI with image file
-                # Claude CLI can read images when passed as argument
-                cmd = [
-                    "claude",
-                    "--print",
-                    "-p", image_prompt,
-                    tmp_path  # Pass image file path
-                ]
+            # Call Claude CLI - it will use its Read tool to view the image
+            cmd = [
+                "claude",
+                "--print",
+                "--allowedTools", "Read",
+                "-p", image_prompt
+            ]
 
-                logger.info(f"[InvoiceExtract] Running Claude CLI with image: {tmp_path}")
+            logger.info(f"[InvoiceExtract] Running Claude CLI for image: {tmp_path}")
 
+            try:
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
                     text=True,
-                    timeout=90,
+                    timeout=120,
                     cwd="/app"
                 )
-                
+
+                response_text = result.stdout.strip()
+                logger.info(f"[InvoiceExtract] CLI returncode: {result.returncode}")
+                logger.info(f"[InvoiceExtract] Response length: {len(response_text)}")
+                if response_text:
+                    logger.info(f"[InvoiceExtract] Response (first 500): {response_text[:500]}")
+
+                if result.returncode != 0:
+                    logger.error(f"[InvoiceExtract] CLI stderr: {result.stderr}")
+                    return InvoiceExtractResponse(
+                        success=False,
+                        error=f"Claude CLI error: {result.stderr[:200] or result.stdout[:200]}"
+                    )
             finally:
                 # Clean up temp file
-                try:
+                import os
+                if os.path.exists(tmp_path):
                     os.unlink(tmp_path)
-                except:
-                    pass
+                    logger.info(f"[InvoiceExtract] Cleaned up temp file: {tmp_path}")
 
         else:
-            # PDF FILE - Extract text first, then analyze
+            # ============ PDF EXTRACTION (Using pypdf + Claude CLI) ============
             logger.info(f"[InvoiceExtract] Processing as PDF")
-            
+
+            # Extract text from PDF using pypdf
             try:
                 from pypdf import PdfReader
                 reader = PdfReader(BytesIO(file_content))
@@ -867,13 +862,8 @@ Respond with JSON only."""
                 if not pdf_text.strip():
                     return InvoiceExtractResponse(
                         success=False,
-                        error="PDF contains no extractable text (may be image-based PDF - try uploading as image)"
+                        error="PDF contains no extractable text (may be image-based)"
                     )
-                
-                # Sanitize the extracted text
-                pdf_text = sanitize_text(pdf_text)
-                logger.info(f"[InvoiceExtract] Sanitized text: {len(pdf_text)} chars")
-                
             except Exception as e:
                 logger.error(f"[InvoiceExtract] PDF extraction error: {e}")
                 return InvoiceExtractResponse(
@@ -891,7 +881,7 @@ EXTRACTED PDF TEXT:
 
 Respond with JSON only."""
 
-            # Call Claude CLI with text prompt
+            # Call Claude CLI with the text prompt
             cmd = [
                 "claude",
                 "--print",
@@ -908,26 +898,26 @@ Respond with JSON only."""
                 cwd="/app"
             )
 
-        # Process Claude response (same for both PDF and image)
-        logger.info(f"[InvoiceExtract] CLI returncode: {result.returncode}")
-        if result.stdout:
-            logger.info(f"[InvoiceExtract] Raw stdout (first 500): {result.stdout[:500]}")
-        if result.stderr:
-            logger.info(f"[InvoiceExtract] Raw stderr: {result.stderr[:200]}")
+            # Log the raw response for debugging
+            logger.info(f"[InvoiceExtract] CLI returncode: {result.returncode}")
+            if result.stdout:
+                logger.info(f"[InvoiceExtract] Raw stdout (first 500): {result.stdout[:500]}")
+            if result.stderr:
+                logger.info(f"[InvoiceExtract] Raw stderr: {result.stderr[:200]}")
 
-        if result.returncode != 0:
-            logger.error(f"[InvoiceExtract] CLI returncode: {result.returncode}")
-            logger.error(f"[InvoiceExtract] CLI stderr: {result.stderr}")
-            logger.error(f"[InvoiceExtract] CLI stdout: {result.stdout[:500] if result.stdout else 'empty'}")
-            return InvoiceExtractResponse(
-                success=False,
-                error=f"Claude CLI error (rc={result.returncode}): {result.stderr[:200] or result.stdout[:200]}"
-            )
+            if result.returncode != 0:
+                logger.error(f"[InvoiceExtract] CLI returncode: {result.returncode}")
+                logger.error(f"[InvoiceExtract] CLI stderr: {result.stderr}")
+                logger.error(f"[InvoiceExtract] CLI stdout: {result.stdout[:500] if result.stdout else 'empty'}")
+                return InvoiceExtractResponse(
+                    success=False,
+                    error=f"Claude CLI error (rc={result.returncode}): {result.stderr[:200] or result.stdout[:200]}"
+                )
 
-        response_text = result.stdout.strip()
-        logger.info(f"[InvoiceExtract] Response length: {len(response_text)}")
+            response_text = result.stdout.strip()
+            logger.info(f"[InvoiceExtract] Response length: {len(response_text)}")
 
-        # Parse JSON from response
+        # ============ PARSE JSON RESPONSE ============
         try:
             start_idx = response_text.find('{')
             end_idx = response_text.rfind('}')
@@ -947,13 +937,6 @@ Respond with JSON only."""
                 error=f"Failed to parse response: {str(e)}"
             )
 
-        # For images, we don't have extracted text, use summary from Claude
-        raw_text = None
-        if not is_image:
-            raw_text = pdf_text[:1000] if 'pdf_text' in dir() and pdf_text else None
-        else:
-            raw_text = extracted.get("raw_text")
-
         return InvoiceExtractResponse(
             success=True,
             invoice_number=extracted.get("invoice_number"),
@@ -967,7 +950,7 @@ Respond with JSON only."""
             vendor_vat_number=extracted.get("vendor_vat_number"),
             currency=extracted.get("currency", "EUR"),
             line_items=extracted.get("line_items", []),
-            raw_text=raw_text
+            raw_text=extracted.get("raw_text")
         )
 
     except httpx.TimeoutException:
