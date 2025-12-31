@@ -1,6 +1,7 @@
 #!/bin/bash
 # Auto Token Refresh Script for Claude OAuth
 # Runs via cron every 6 hours to keep tokens fresh
+# ALSO updates Coolify env var to persist across container restarts
 
 # Colors for output
 RED='\033[0;31m'
@@ -14,6 +15,11 @@ LOG_PREFIX="[TOKEN-REFRESH $(date '+%Y-%m-%d %H:%M:%S')]"
 CLAUDE_CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 CREDENTIALS_FILE="/root/.claude/.credentials.json"
 
+# Coolify API configuration (for persisting refreshed tokens)
+COOLIFY_API_URL="${COOLIFY_API_URL:-https://coolify.faric.cloud/api/v1}"
+COOLIFY_API_TOKEN="${COOLIFY_API_TOKEN:-}"
+COOLIFY_APP_UUID="${COOLIFY_APP_UUID:-pss0wkokscwckssws8g4gow8}"
+
 log_info() {
     echo -e "${GREEN}${LOG_PREFIX}${NC} $1"
 }
@@ -24,6 +30,35 @@ log_warn() {
 
 log_error() {
     echo -e "${RED}${LOG_PREFIX}${NC} $1"
+}
+
+# Function to update Coolify env var with new credentials
+update_coolify_env() {
+    if [ -z "$COOLIFY_API_TOKEN" ]; then
+        log_warn "COOLIFY_API_TOKEN not set, skipping Coolify env update"
+        log_warn "Token will be lost on container restart!"
+        return 1
+    fi
+
+    log_info "Updating Coolify CLAUDE_CREDENTIALS_B64 env var..."
+
+    # Read credentials and base64 encode
+    NEW_CREDS_B64=$(cat "$CREDENTIALS_FILE" | base64 -w 0)
+
+    # Update via Coolify API (bulk update endpoint)
+    RESPONSE=$(curl -s -X PATCH "${COOLIFY_API_URL}/applications/${COOLIFY_APP_UUID}/envs/bulk" \
+        -H "Authorization: Bearer ${COOLIFY_API_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "[{\"key\": \"CLAUDE_CREDENTIALS_B64\", \"value\": \"${NEW_CREDS_B64}\"}]" 2>/dev/null)
+
+    if echo "$RESPONSE" | grep -q "CLAUDE_CREDENTIALS_B64"; then
+        log_info "Coolify env var updated successfully - token will persist across restarts"
+        return 0
+    else
+        log_error "Failed to update Coolify env var"
+        log_error "Response: $RESPONSE"
+        return 1
+    fi
 }
 
 # Check if credentials file exists
@@ -131,6 +166,10 @@ expires = d.get('claudeAiOauth', {}).get('expiresAt', 0)
 print(f'{(expires - time.time()*1000)/1000/60/60:.1f}')
 " 2>/dev/null)
         log_info "Token refresh successful! New token valid for ${NEW_HOURS} hours"
+
+        # CRITICAL: Also update Coolify env var to persist across container restarts
+        update_coolify_env
+
         exit 0
     else
         log_error "Failed to update credentials file"
