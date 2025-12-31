@@ -177,27 +177,33 @@ if [ -f "/app/.mcp.json" ]; then
     echo -e "${GREEN}[OK]${NC} MCP config copied"
 fi
 
-# Setup cron schedule if provided
+# Setup cron schedules
+echo -e "${YELLOW}[CRON]${NC} Setting up cron schedules..."
+crontab -r 2>/dev/null || true
+
+# Always add token refresh cron (every 6 hours)
+CRON_LINES="0 */6 * * * /app/refresh-token.sh >> /app/logs/token-refresh.log 2>&1\n"
+echo -e "${GREEN}[OK]${NC} Token refresh scheduled: every 6 hours"
+
+# Add agent schedule if provided
 if [ -n "$AGENT_SCHEDULE" ]; then
-    echo -e "${YELLOW}[CRON]${NC} Setting up schedule: $AGENT_SCHEDULE"
-    crontab -r 2>/dev/null || true
-    
     if [[ "$AGENT_SCHEDULE" == *"*"* ]]; then
-        echo "$AGENT_SCHEDULE /app/schedule.sh >> /app/logs/cron.log 2>&1" | crontab -
+        CRON_LINES="$CRON_LINES$AGENT_SCHEDULE /app/schedule.sh >> /app/logs/cron.log 2>&1\n"
+        echo -e "${GREEN}[OK]${NC} Agent scheduled: $AGENT_SCHEDULE"
     else
-        CRON_LINES=""
         IFS=',' read -ra TIMES <<< "$AGENT_SCHEDULE"
         for TIME in "${TIMES[@]}"; do
             HOUR=$(echo $TIME | cut -d: -f1)
             MINUTE=$(echo $TIME | cut -d: -f2)
             CRON_LINES="$CRON_LINES$MINUTE $HOUR * * * /app/schedule.sh >> /app/logs/cron.log 2>&1\n"
-            echo -e "${GREEN}[OK]${NC} Scheduled at $TIME"
+            echo -e "${GREEN}[OK]${NC} Agent scheduled at $TIME"
         done
-        echo -e "$CRON_LINES" | crontab -
     fi
-    service cron start
-    echo -e "${GREEN}[OK]${NC} Cron daemon started"
 fi
+
+echo -e "$CRON_LINES" | crontab -
+service cron start
+echo -e "${GREEN}[OK]${NC} Cron daemon started"
 
 echo -e "${BLUE}==========================================${NC}"
 echo -e "${GREEN}[API]${NC} Starting API server on port 8080..."
