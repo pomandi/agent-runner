@@ -56,7 +56,7 @@ RUN chmod +x /entrypoint.sh /app/schedule.sh /app/run-agent.sh
 COPY config/ /app/config/
 COPY agent_registry.py /app/agent_registry.py
 COPY sdk_executor.py /app/sdk_executor.py
-COPY api_v2.py /app/api.py
+COPY api.py /app/api.py
 
 # Environment variables
 ENV AGENT_NAME=feed-publisher
