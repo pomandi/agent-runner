@@ -1,5 +1,10 @@
-# Agent Runner Container - Full Visibility + Scheduling + API
-# Runs Claude CLI agents with MCP support, cron scheduling, and HTTP API
+# Agent Runner Container v2.0 - SDK-Only Architecture
+#
+# Key features:
+# - Uses Claude Agent SDK (not CLI subprocess)
+# - Config-driven agents (agents.yaml)
+# - Scalable: add agents via YAML, no code changes
+# - Uses ~/.claude/.credentials.json for auth (Claude Max subscription)
 
 FROM node:20-slim
 
@@ -45,8 +50,13 @@ COPY .mcp.json /app/.mcp.json
 COPY entrypoint.sh /entrypoint.sh
 COPY schedule.sh /app/schedule.sh
 COPY run-agent.sh /app/run-agent.sh
-COPY api.py /app/api.py
 RUN chmod +x /entrypoint.sh /app/schedule.sh /app/run-agent.sh
+
+# Copy SDK-based API (v2 architecture)
+COPY config/ /app/config/
+COPY agent_registry.py /app/agent_registry.py
+COPY sdk_executor.py /app/sdk_executor.py
+COPY api_v2.py /app/api.py
 
 # Environment variables
 ENV AGENT_NAME=feed-publisher
