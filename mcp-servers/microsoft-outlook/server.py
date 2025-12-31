@@ -51,19 +51,25 @@ _token_expiry: Optional[datetime] = None
 
 # Load env file
 def load_env():
-    """Load environment variables from .env file"""
-    env_path = Path("/home/claude/.claude/agents/unified-analytics/mcp-servers/.env")
-    if env_path.exists():
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, value = line.split('=', 1)
-                    key = key.strip()
-                    value = value.strip().strip("'\"")
-                    # Always update Microsoft tokens (they change frequently)
-                    if key.startswith("MICROSOFT_") or key not in os.environ:
-                        os.environ[key] = value
+    """Load environment variables from .env file (try multiple locations)"""
+    env_paths = [
+        Path("/app/.env"),  # Coolify deployment
+        Path("/home/claude/.claude/agents/agent-runner/.env"),  # Agent runner local
+        Path("/home/claude/.claude/agents/unified-analytics/mcp-servers/.env"),  # Legacy local
+    ]
+    for env_path in env_paths:
+        if env_path.exists():
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        key, value = line.split('=', 1)
+                        key = key.strip()
+                        value = value.strip().strip("'\"")
+                        # Always update Microsoft tokens (they change frequently)
+                        if key.startswith("MICROSOFT_") or key not in os.environ:
+                            os.environ[key] = value
+            break  # Use first found .env file
 
 # Load env on import
 load_env()
