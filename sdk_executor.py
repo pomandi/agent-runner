@@ -110,10 +110,38 @@ class SDKExecutor:
             mcp_config_path: Path to MCP config file (default: /root/.claude/.mcp.json)
         """
         self.mcp_config_path = mcp_config_path or "/root/.claude/.mcp.json"
+        self.mcp_servers = self._load_mcp_config()
 
         if not SDK_AVAILABLE:
             logger.error("claude-agent-sdk not installed!")
             raise RuntimeError("claude-agent-sdk not available")
+
+    def _load_mcp_config(self) -> Dict[str, Any]:
+        """Load MCP server configuration from JSON file."""
+        mcp_path = Path(self.mcp_config_path)
+        if not mcp_path.exists():
+            logger.warning(f"MCP config not found: {mcp_path}")
+            return {}
+
+        try:
+            with open(mcp_path) as f:
+                config = json.load(f)
+
+            # Convert from .mcp.json format to SDK format
+            mcp_servers = {}
+            for name, server_config in config.get("mcpServers", {}).items():
+                mcp_servers[name] = {
+                    "type": "stdio",
+                    "command": server_config.get("command", "python3"),
+                    "args": server_config.get("args", [])
+                }
+
+            logger.info(f"Loaded {len(mcp_servers)} MCP servers: {list(mcp_servers.keys())}")
+            return mcp_servers
+
+        except Exception as e:
+            logger.error(f"Failed to load MCP config: {e}")
+            return {}
 
     async def run_prompt(
         self,
@@ -142,16 +170,18 @@ class SDKExecutor:
         result = ExecutionResult(success=False)
 
         try:
-            # Build options
+            # Build options with MCP servers
             options = ClaudeAgentOptions(
                 cwd=cwd if Path(cwd).exists() else "/app",
                 allowed_tools=tools or [],
-                max_turns=max_turns
+                max_turns=max_turns,
+                mcp_servers=self.mcp_servers if self.mcp_servers else None
             )
 
             logger.info(f"[SDK] Running prompt ({len(prompt)} chars)")
             logger.info(f"[SDK] CWD: {cwd}")
             logger.info(f"[SDK] Tools: {tools}")
+            logger.info(f"[SDK] MCP Servers: {list(self.mcp_servers.keys()) if self.mcp_servers else 'None'}")
 
             response_parts = []
             message_count = 0
