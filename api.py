@@ -1064,6 +1064,294 @@ Respond with JSON only."""
 
 
 # ============================================================
+# Credit Card Statement Extraction
+# ============================================================
+
+class CCStatementExtractRequest(BaseModel):
+    pdf_url: str  # URL to the PDF file (Cloudflare R2)
+    statement_id: Optional[int] = None  # Optional statement ID for logging
+
+
+class CCStatementTransaction(BaseModel):
+    transaction_date: str
+    posting_date: Optional[str] = None
+    description: str
+    merchant_name: Optional[str] = None
+    amount: float
+    currency: str = "EUR"
+    original_amount: Optional[float] = None
+    original_currency: Optional[str] = None
+    transaction_type: str  # purchase, refund, fee, interest, payment
+
+
+class CCStatementExtractResponse(BaseModel):
+    success: bool
+    statement_period: Optional[str] = None  # YYYY-MM
+    statement_date: Optional[str] = None  # YYYY-MM-DD
+    due_date: Optional[str] = None
+    opening_balance: Optional[float] = None
+    total_purchases: Optional[float] = None
+    total_payments: Optional[float] = None
+    total_fees: Optional[float] = None
+    closing_balance: Optional[float] = None
+    minimum_payment: Optional[float] = None
+    currency: str = "EUR"
+    transactions: list = []
+    card_holder_name: Optional[str] = None
+    bank_name: Optional[str] = None
+    last_four_digits: Optional[str] = None
+    error: Optional[str] = None
+
+
+CC_STATEMENT_EXTRACT_PROMPT = """You are a credit card statement parser. Analyze the provided credit card statement and extract all relevant information.
+
+Return a JSON object with the following structure:
+{{
+  "success": true,
+  "statement_period": "YYYY-MM",
+  "statement_date": "YYYY-MM-DD",
+  "due_date": "YYYY-MM-DD or null",
+  "opening_balance": number or null,
+  "total_purchases": number (sum of all purchases),
+  "total_payments": number (sum of payments received),
+  "total_fees": number (interest, fees, etc.),
+  "closing_balance": number (amount owed at end of period),
+  "minimum_payment": number or null,
+  "currency": "EUR" or "USD" etc,
+  "card_holder_name": "string or null",
+  "bank_name": "string",
+  "last_four_digits": "1234",
+  "transactions": [
+    {{
+      "transaction_date": "YYYY-MM-DD",
+      "posting_date": "YYYY-MM-DD or null",
+      "description": "Transaction description",
+      "merchant_name": "Merchant name if identifiable",
+      "amount": number (positive for purchases/fees, negative for refunds),
+      "currency": "EUR",
+      "original_amount": number or null (if foreign currency),
+      "original_currency": "USD" or null,
+      "transaction_type": "purchase" | "refund" | "fee" | "interest" | "payment"
+    }}
+  ]
+}}
+
+Important parsing rules:
+1. All amounts should be numbers (not strings)
+2. Dates should be in YYYY-MM-DD format
+3. For purchases: amount should be POSITIVE
+4. For refunds: amount should be NEGATIVE
+5. For payments received: transaction_type should be "payment"
+6. Include ALL transactions listed on the statement
+7. Try to identify merchant names from descriptions
+8. If the statement is in a language other than English, still parse dates in YYYY-MM-DD format
+9. statement_period should be derived from the statement date (YYYY-MM format)
+
+If you cannot parse the statement, return:
+{{
+  "success": false,
+  "error": "Description of what went wrong"
+}}
+
+Return ONLY the JSON object, no other text."""
+
+
+@app.post("/api/cc-statement-extract", response_model=CCStatementExtractResponse)
+async def extract_cc_statement(request: CCStatementExtractRequest):
+    """Extract data from a credit card statement PDF using Claude AI.
+
+    This endpoint:
+    1. Downloads the PDF from the provided URL (Cloudflare R2)
+    2. Extracts text using pypdf
+    3. Uses Claude CLI to parse the statement
+    4. Returns structured statement data with transactions
+    """
+    import httpx
+    from io import BytesIO
+
+    try:
+        file_url = request.pdf_url
+        logger.info(f"[CCStatementExtract] Processing file: {file_url}")
+        logger.info(f"[CCStatementExtract] Statement ID: {request.statement_id}")
+
+        # Download the file
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(file_url)
+            if response.status_code != 200:
+                return CCStatementExtractResponse(
+                    success=False,
+                    error=f"Failed to download file: HTTP {response.status_code}"
+                )
+            file_content = response.content
+
+        logger.info(f"[CCStatementExtract] Downloaded: {len(file_content)} bytes")
+
+        # Extract text from PDF using pypdf
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(BytesIO(file_content))
+            pdf_text = ""
+            for page_num, page in enumerate(reader.pages):
+                page_text = page.extract_text()
+                if page_text:
+                    pdf_text += f"\n--- Page {page_num + 1} ---\n{page_text}"
+
+            logger.info(f"[CCStatementExtract] Extracted {len(pdf_text)} chars from {len(reader.pages)} pages")
+
+            if not pdf_text.strip():
+                # Try image-based extraction with Claude CLI Read tool
+                logger.info("[CCStatementExtract] PDF has no text, trying image-based extraction")
+                import tempfile
+
+                with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False, dir='/tmp') as tmp_file:
+                    tmp_file.write(file_content)
+                    tmp_path = tmp_file.name
+
+                image_prompt = f"""Read and analyze the credit card statement PDF at this path: {tmp_path}
+
+{CC_STATEMENT_EXTRACT_PROMPT}
+
+IMPORTANT: First read the PDF file using the Read tool, then analyze it and respond with JSON only."""
+
+                cmd = [
+                    "claude",
+                    "--print",
+                    "--allowedTools", "Read",
+                    "-p", image_prompt
+                ]
+
+                try:
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=180,
+                        cwd="/app"
+                    )
+                    response_text = result.stdout.strip()
+                finally:
+                    import os
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+
+                if result.returncode != 0:
+                    return CCStatementExtractResponse(
+                        success=False,
+                        error=f"Claude CLI error: {result.stderr[:200] or result.stdout[:200]}"
+                    )
+            else:
+                # Text-based extraction
+                full_prompt = f"""Here is the text extracted from a credit card statement PDF. Please analyze it and extract structured data.
+
+EXTRACTED PDF TEXT:
+{pdf_text[:12000]}
+
+{CC_STATEMENT_EXTRACT_PROMPT}
+
+Respond with JSON only."""
+
+                cmd = [
+                    "claude",
+                    "--print",
+                    "-p", full_prompt
+                ]
+
+                logger.info(f"[CCStatementExtract] Running Claude CLI with {len(full_prompt)} char prompt")
+
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    cwd="/app"
+                )
+
+                if result.returncode != 0:
+                    logger.error(f"[CCStatementExtract] CLI error: {result.stderr}")
+                    return CCStatementExtractResponse(
+                        success=False,
+                        error=f"Claude CLI error (rc={result.returncode}): {result.stderr[:200] or result.stdout[:200]}"
+                    )
+
+                response_text = result.stdout.strip()
+
+        except Exception as e:
+            logger.error(f"[CCStatementExtract] PDF extraction error: {e}")
+            return CCStatementExtractResponse(
+                success=False,
+                error=f"PDF processing failed: {str(e)}"
+            )
+
+        logger.info(f"[CCStatementExtract] Response length: {len(response_text)}")
+
+        # Parse JSON from response
+        try:
+            start_idx = response_text.find('{')
+            end_idx = response_text.rfind('}')
+
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                json_str = response_text[start_idx:end_idx + 1]
+                extracted = json.loads(json_str)
+            else:
+                return CCStatementExtractResponse(
+                    success=False,
+                    error=f"No valid JSON in response. Response was: {response_text[:300]}"
+                )
+        except json.JSONDecodeError as e:
+            logger.error(f"[CCStatementExtract] JSON parse error: {e}")
+            return CCStatementExtractResponse(
+                success=False,
+                error=f"Failed to parse response: {str(e)}"
+            )
+
+        # Check if extraction was successful
+        if not extracted.get("success", False):
+            return CCStatementExtractResponse(
+                success=False,
+                error=extracted.get("error", "Unknown extraction error")
+            )
+
+        return CCStatementExtractResponse(
+            success=True,
+            statement_period=extracted.get("statement_period"),
+            statement_date=extracted.get("statement_date"),
+            due_date=extracted.get("due_date"),
+            opening_balance=extracted.get("opening_balance"),
+            total_purchases=extracted.get("total_purchases"),
+            total_payments=extracted.get("total_payments"),
+            total_fees=extracted.get("total_fees"),
+            closing_balance=extracted.get("closing_balance"),
+            minimum_payment=extracted.get("minimum_payment"),
+            currency=extracted.get("currency", "EUR"),
+            transactions=extracted.get("transactions", []),
+            card_holder_name=extracted.get("card_holder_name"),
+            bank_name=extracted.get("bank_name"),
+            last_four_digits=extracted.get("last_four_digits")
+        )
+
+    except httpx.TimeoutException:
+        logger.error("[CCStatementExtract] Download timeout")
+        return CCStatementExtractResponse(
+            success=False,
+            error="File download timed out"
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("[CCStatementExtract] Claude timeout")
+        return CCStatementExtractResponse(
+            success=False,
+            error="Statement processing timed out"
+        )
+    except Exception as e:
+        logger.error(f"[CCStatementExtract] Error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return CCStatementExtractResponse(
+            success=False,
+            error=str(e)
+        )
+
+
+# ============================================================
 # Invoice Find from Email - Search emails for invoices
 # ============================================================
 
