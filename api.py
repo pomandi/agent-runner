@@ -762,6 +762,27 @@ EXTRACTION RULES:
 
 5. LINE ITEMS: If visible, extract individual items with description and amount
 
+6. CURRENCY DETECTION - CRITICAL:
+   Always detect the ACTUAL currency used in the invoice. Look for:
+   - Currency symbols: € (EUR), $ (USD), £ (GBP), ¥ (CNY/JPY), ₺ (TRY), ₹ (INR), ₽ (RUB), ₩ (KRW), CHF
+   - Currency codes: EUR, USD, GBP, CNY, JPY, TRY, CHF, AUD, CAD, etc.
+   - Text indicators: "Chinese Yuan", "US Dollar", "British Pound", etc.
+   - Country context: Chinese company = likely CNY, US company = likely USD
+
+   COMMON CURRENCY CODES:
+   - EUR = Euro (€)
+   - USD = US Dollar ($)
+   - GBP = British Pound (£)
+   - CNY = Chinese Yuan/Renminbi (¥ or RMB)
+   - JPY = Japanese Yen (¥)
+   - CHF = Swiss Franc
+   - TRY = Turkish Lira (₺)
+   - INR = Indian Rupee (₹)
+   - AED = UAE Dirham
+   - SGD = Singapore Dollar
+
+   DO NOT assume EUR by default! Only use EUR if you see € symbol or "EUR" text.
+
 OUTPUT FORMAT - Respond with valid JSON only:
 {{
   "invoice_number": "string or null",
@@ -773,7 +794,7 @@ OUTPUT FORMAT - Respond with valid JSON only:
   "vendor_name": "string or null",
   "vendor_address": "string or null",
   "vendor_vat_number": "string or null",
-  "currency": "EUR" (or other if clearly stated),
+  "currency": "3-letter ISO code (e.g., EUR, USD, CNY, GBP, TRY, JPY, CHF)",
   "line_items": [
     {{"description": "string", "quantity": number, "unit_price": number, "total": number}}
   ],
@@ -781,7 +802,8 @@ OUTPUT FORMAT - Respond with valid JSON only:
 }}
 
 Be precise with numbers - financial accuracy is critical.
-If a value cannot be determined with confidence, set it to null."""
+If a value cannot be determined with confidence, set it to null.
+ALWAYS specify the correct currency - this is critical for accounting!"""
 
 
 @app.post("/api/invoice-extract", response_model=InvoiceExtractResponse)
@@ -1228,6 +1250,197 @@ async def find_invoice_from_email(request: InvoiceFindRequest):
             success=False,
             error=str(e)
         )
+
+
+# ============================================================
+# Invoice Pre-fetch Endpoints
+# ============================================================
+
+class PrefetchTriggerRequest(BaseModel):
+    days_back: int = 30
+    triggered_by: str = "manual"
+    email_accounts: Optional[list] = None  # ["godaddy", "outlook"] default both
+
+
+class PrefetchRunResponse(BaseModel):
+    run_id: int
+    status: str
+    emails_scanned: int = 0
+    attachments_found: int = 0
+    invoices_created: int = 0
+    duplicates_skipped: int = 0
+    errors_count: int = 0
+    error_details: list = []
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    triggered_by: str = "manual"
+
+
+# Track current prefetch run
+current_prefetch = {
+    "running": False,
+    "run_id": None
+}
+
+
+def run_prefetch_background(days_back: int, triggered_by: str, email_accounts: list):
+    """Run prefetch in background thread."""
+    global current_prefetch
+    try:
+        current_prefetch["running"] = True
+
+        # Import here to avoid circular import
+        from invoice_prefetch import run_prefetch as do_prefetch
+
+        result = do_prefetch(
+            days_back=days_back,
+            triggered_by=triggered_by,
+            email_accounts=email_accounts
+        )
+
+        current_prefetch["run_id"] = result.id
+        logger.info(f"[Prefetch] Completed run {result.id}: {result.invoices_created} invoices created")
+
+    except Exception as e:
+        logger.error(f"[Prefetch] Error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+    finally:
+        current_prefetch["running"] = False
+
+
+@app.post("/api/invoices/prefetch/trigger")
+async def trigger_prefetch(request: PrefetchTriggerRequest, background_tasks: BackgroundTasks):
+    """
+    Trigger invoice pre-fetch from emails.
+
+    Scans GoDaddy and/or Outlook emails for invoice attachments,
+    extracts metadata, uploads to R2, and saves to database.
+    """
+    if current_prefetch["running"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Prefetch already running"
+        )
+
+    email_accounts = request.email_accounts or ["godaddy", "outlook"]
+
+    logger.info(f"[Prefetch] Starting: days_back={request.days_back}, accounts={email_accounts}")
+
+    # Start in background
+    background_tasks.add_task(
+        run_prefetch_background,
+        request.days_back,
+        request.triggered_by,
+        email_accounts
+    )
+
+    return {
+        "status": "started",
+        "message": f"Prefetch started for accounts: {', '.join(email_accounts)}",
+        "days_back": request.days_back
+    }
+
+
+@app.get("/api/invoices/prefetch/status/{run_id}", response_model=PrefetchRunResponse)
+async def get_prefetch_status(run_id: int):
+    """Get status of a specific prefetch run."""
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+
+    db_url = os.environ.get(
+        "EXPENSE_TRACKER_DB_URL",
+        "postgres://postgres:4mXro2JijzR56SARkdGseBpUCw0M1JtdJMT5JbsRUbFPtcGmgnTd4eAEC4hdrEWP@46.224.117.155:5434/expense_tracker"
+    )
+
+    try:
+        conn = psycopg2.connect(db_url)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT * FROM prefetch_runs WHERE id = %s
+            """, (run_id,))
+            row = cur.fetchone()
+
+        conn.close()
+
+        if not row:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        return PrefetchRunResponse(
+            run_id=row["id"],
+            status=row["status"],
+            emails_scanned=row["emails_scanned"] or 0,
+            attachments_found=row["attachments_found"] or 0,
+            invoices_created=row["invoices_created"] or 0,
+            duplicates_skipped=row["duplicates_skipped"] or 0,
+            errors_count=row["errors_count"] or 0,
+            error_details=row["error_details"] or [],
+            started_at=row["started_at"].isoformat() if row["started_at"] else None,
+            completed_at=row["completed_at"].isoformat() if row["completed_at"] else None,
+            triggered_by=row["triggered_by"] or "manual"
+        )
+
+    except psycopg2.Error as e:
+        logger.error(f"[Prefetch] DB error: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@app.get("/api/invoices/prefetch/history")
+async def get_prefetch_history(limit: int = 10):
+    """Get recent prefetch runs."""
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+
+    db_url = os.environ.get(
+        "EXPENSE_TRACKER_DB_URL",
+        "postgres://postgres:4mXro2JijzR56SARkdGseBpUCw0M1JtdJMT5JbsRUbFPtcGmgnTd4eAEC4hdrEWP@46.224.117.155:5434/expense_tracker"
+    )
+
+    try:
+        conn = psycopg2.connect(db_url)
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT * FROM prefetch_runs
+                ORDER BY started_at DESC
+                LIMIT %s
+            """, (limit,))
+            rows = cur.fetchall()
+
+        conn.close()
+
+        runs = []
+        for row in rows:
+            runs.append({
+                "run_id": row["id"],
+                "status": row["status"],
+                "emails_scanned": row["emails_scanned"] or 0,
+                "attachments_found": row["attachments_found"] or 0,
+                "invoices_created": row["invoices_created"] or 0,
+                "duplicates_skipped": row["duplicates_skipped"] or 0,
+                "errors_count": row["errors_count"] or 0,
+                "started_at": row["started_at"].isoformat() if row["started_at"] else None,
+                "completed_at": row["completed_at"].isoformat() if row["completed_at"] else None,
+                "triggered_by": row["triggered_by"] or "manual"
+            })
+
+        return {
+            "runs": runs,
+            "total": len(runs),
+            "currently_running": current_prefetch["running"]
+        }
+
+    except psycopg2.Error as e:
+        logger.error(f"[Prefetch] DB error: {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@app.get("/api/invoices/prefetch/current")
+async def get_current_prefetch():
+    """Get currently running prefetch status."""
+    return {
+        "running": current_prefetch["running"],
+        "run_id": current_prefetch["run_id"]
+    }
 
 
 if __name__ == "__main__":

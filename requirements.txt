@@ -10,3 +10,8 @@ asyncpg>=0.29.0
 claude-agent-sdk>=0.1.0
 pypdf>=4.0.0
 pillow-heif>=0.18.0
+# Invoice pre-fetch dependencies
+psycopg2-binary>=2.9.0
+PyPDF2>=3.0.0
+pytesseract>=0.3.10
+pdf2image>=1.16.0
