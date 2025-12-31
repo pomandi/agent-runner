@@ -38,6 +38,10 @@ else
     echo -e "${YELLOW}[WARN]${NC} Set CLAUDE_CREDENTIALS_B64 env var with base64 encoded JSON"
 fi
 
+# Claude Code OAuth client_id (official)
+# Source: https://github.com/RavenStorm-bit/claude-token-refresh
+CLAUDE_CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+
 # Token refresh function
 refresh_oauth_token() {
     echo -e "${YELLOW}[TOKEN]${NC} Attempting to refresh OAuth token..."
@@ -74,7 +78,7 @@ except Exception as e:
         -H "Content-Type: application/x-www-form-urlencoded" \
         -d "grant_type=refresh_token" \
         -d "refresh_token=$REFRESH_TOKEN" \
-        -d "client_id=9d1c250a-e61b-44fd-b3a0-63d4c5d03e71" 2>/dev/null)
+        -d "client_id=$CLAUDE_CLIENT_ID" 2>/dev/null)
     
     # Check if response contains access_token
     if echo "$RESPONSE" | grep -q "access_token"; then
