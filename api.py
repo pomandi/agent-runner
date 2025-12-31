@@ -105,7 +105,6 @@ def convert_heic_to_jpeg(file_content: bytes) -> bytes:
         raise
 
 
-
 app = FastAPI(
     title="Agent Runner API",
     description="Run Claude agents remotely with full conversation logging",
@@ -846,7 +845,6 @@ async def extract_invoice(request: InvoiceExtractRequest):
                         error=f"Failed to convert HEIC image: {str(heic_error)}"
                     )
 
-
             # Determine file extension
             if 'jpeg' in file_type or 'jpg' in file_type:
                 ext = '.jpg'
@@ -1038,6 +1036,195 @@ Respond with JSON only."""
         import traceback
         logger.error(traceback.format_exc())
         return InvoiceExtractResponse(
+            success=False,
+            error=str(e)
+        )
+
+
+# ============================================================
+# Invoice Find from Email - Search emails for invoices
+# ============================================================
+
+class InvoiceFindRequest(BaseModel):
+    transactionId: Optional[int] = None
+    vendorName: str
+    amount: float
+    date: str  # YYYY-MM-DD
+    description: Optional[str] = None
+    counterpartyName: Optional[str] = None
+
+
+class InvoiceFindResponse(BaseModel):
+    success: bool
+    found: bool = False
+    invoiceId: Optional[int] = None
+    message: Optional[str] = None
+    source: Optional[dict] = None
+    searchStrategy: Optional[str] = None
+    emailsScanned: int = 0
+    error: Optional[str] = None
+
+
+INVOICE_FIND_PROMPT = """You are an invoice finder agent. Your task is to search emails to find an invoice matching these transaction details:
+
+TRANSACTION DETAILS:
+- Vendor: {vendor_name}
+- Amount: {amount} EUR
+- Date: {date}
+- Description: {description}
+- Counterparty: {counterparty}
+
+SEARCH STRATEGY:
+1. First, search GoDaddy mail (info@pomandi.com) using mcp__godaddy-mail__search_emails
+   - Search by vendor name in subject or sender
+   - Date range: {date_start} to {date_end} (30 days before/after transaction)
+
+2. For each email with attachments:
+   - Use mcp__godaddy-mail__get_attachments to check for PDF files
+   - If found, use mcp__godaddy-mail__download_attachment to save it
+
+3. Upload found invoice to expense-tracker:
+   - Save file to /tmp/invoices/
+   - Use Bash to curl POST to https://fin.pomandi.com/api/invoices/upload
+
+4. If Microsoft Outlook is configured, also search there using mcp__microsoft-outlook__search_emails
+
+IMPORTANT:
+- Look for PDF or image attachments (invoice files)
+- Check if amount appears in email body
+- Match vendor name or email domain
+
+RESPOND WITH JSON:
+{{
+  "found": true/false,
+  "invoiceUploaded": true/false,
+  "invoiceId": <id if uploaded>,
+  "source": {{
+    "emailAccount": "info@pomandi.com",
+    "emailUid": "<uid>",
+    "emailSubject": "<subject>",
+    "emailFrom": "<sender>",
+    "emailDate": "<date>",
+    "attachmentName": "<filename>"
+  }},
+  "searchStrategy": "vendor_sender_pattern",
+  "emailsScanned": <count>,
+  "message": "<explanation>"
+}}
+
+If not found:
+{{
+  "found": false,
+  "emailsScanned": <count>,
+  "message": "No matching invoice found",
+  "searchedAccounts": ["info@pomandi.com"]
+}}
+
+START SEARCHING NOW."""
+
+
+@app.post("/api/invoice-find", response_model=InvoiceFindResponse)
+async def find_invoice_from_email(request: InvoiceFindRequest):
+    """Search emails to find an invoice matching transaction details.
+
+    Uses GoDaddy IMAP and Microsoft Outlook MCP tools to search emails,
+    download attachments, and upload found invoices.
+    """
+    from datetime import datetime, timedelta
+
+    try:
+        # Calculate date range (30 days before/after transaction)
+        tx_date = datetime.strptime(request.date, "%Y-%m-%d")
+        date_start = (tx_date - timedelta(days=30)).strftime("%Y-%m-%d")
+        date_end = (tx_date + timedelta(days=30)).strftime("%Y-%m-%d")
+
+        # Build the prompt
+        prompt = INVOICE_FIND_PROMPT.format(
+            vendor_name=request.vendorName,
+            amount=request.amount,
+            date=request.date,
+            description=request.description or "",
+            counterparty=request.counterpartyName or "",
+            date_start=date_start,
+            date_end=date_end
+        )
+
+        logger.info(f"[InvoiceFind] Searching for: {request.vendorName} {request.amount} EUR on {request.date}")
+
+        # Ensure tmp directory exists
+        import os
+        os.makedirs("/tmp/invoices", exist_ok=True)
+
+        # Run Claude CLI with MCP tools for email access
+        cmd = [
+            "claude",
+            "--print",
+            "--mcp-config", "/app/.mcp.json",
+            "--allowedTools", "mcp__godaddy-mail__*,mcp__microsoft-outlook__*,Bash,Read,Write",
+            "-p", prompt
+        ]
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=180,  # 3 minutes timeout for email search
+            cwd="/app"
+        )
+
+        if result.returncode != 0:
+            logger.error(f"[InvoiceFind] CLI error: {result.stderr[:500]}")
+            return InvoiceFindResponse(
+                success=False,
+                error=f"Agent error: {result.stderr[:200]}"
+            )
+
+        response_text = result.stdout.strip()
+        logger.info(f"[InvoiceFind] Response length: {len(response_text)}")
+
+        # Parse JSON from response
+        try:
+            start_idx = response_text.find('{')
+            end_idx = response_text.rfind('}')
+
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                json_str = response_text[start_idx:end_idx + 1]
+                json_result = json.loads(json_str)
+
+                return InvoiceFindResponse(
+                    success=True,
+                    found=json_result.get("found", False),
+                    invoiceId=json_result.get("invoiceId"),
+                    message=json_result.get("message"),
+                    source=json_result.get("source"),
+                    searchStrategy=json_result.get("searchStrategy"),
+                    emailsScanned=json_result.get("emailsScanned", 0)
+                )
+            else:
+                logger.error(f"[InvoiceFind] No JSON in response: {response_text[:500]}")
+                return InvoiceFindResponse(
+                    success=False,
+                    error="No valid JSON in agent response"
+                )
+
+        except json.JSONDecodeError as e:
+            logger.error(f"[InvoiceFind] JSON parse error: {e}")
+            return InvoiceFindResponse(
+                success=False,
+                error=f"Failed to parse agent response: {str(e)}"
+            )
+
+    except subprocess.TimeoutExpired:
+        logger.error("[InvoiceFind] Agent timeout")
+        return InvoiceFindResponse(
+            success=False,
+            error="Email search timed out (3 min limit)"
+        )
+    except Exception as e:
+        logger.error(f"[InvoiceFind] Error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return InvoiceFindResponse(
             success=False,
             error=str(e)
         )

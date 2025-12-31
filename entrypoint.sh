@@ -45,13 +45,13 @@ CLAUDE_CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 # Token refresh function
 refresh_oauth_token() {
     echo -e "${YELLOW}[TOKEN]${NC} Attempting to refresh OAuth token..."
-    
+
     # Read current credentials
     if [ ! -f "/root/.claude/.credentials.json" ]; then
         echo -e "${RED}[ERROR]${NC} No credentials file found"
         return 1
     fi
-    
+
     # Extract refresh token using Python (more reliable than jq for nested JSON)
     REFRESH_TOKEN=$(python3 -c "
 import json
@@ -65,14 +65,14 @@ except Exception as e:
     print('', file=sys.stderr)
     sys.exit(1)
 " 2>/dev/null)
-    
+
     if [ -z "$REFRESH_TOKEN" ]; then
         echo -e "${RED}[ERROR]${NC} No refresh token found in credentials"
         return 1
     fi
-    
+
     echo -e "${YELLOW}[TOKEN]${NC} Found refresh token, calling Anthropic API..."
-    
+
     # Call Anthropic OAuth refresh endpoint
     RESPONSE=$(curl -s -X POST "https://console.anthropic.com/v1/oauth/token" \
         -H "Content-Type: application/x-www-form-urlencoded" \

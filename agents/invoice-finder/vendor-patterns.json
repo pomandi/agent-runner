@@ -1,0 +1,81 @@
+{
+  "vendors": {
+    "SNCB": {
+      "aliases": ["SNCB", "NMBS", "B-Rail", "Belgische Spoorwegen"],
+      "senders": ["@sncb.be", "@b-rail.be", "@nmbs.be"],
+      "subjects": ["ticket", "billet", "recu", "confirmation", "e-ticket", "voyage"],
+      "bodyPatterns": ["SNCB", "trajet", "train", "gare"]
+    },
+    "Electrabel": {
+      "aliases": ["Electrabel", "Engie", "ENGIE"],
+      "senders": ["@engie.com", "@electrabel.be", "@engie.be"],
+      "subjects": ["facture", "factuur", "invoice", "votre facture", "avis d'echeance"],
+      "bodyPatterns": ["electricite", "gaz", "energie", "compteur"]
+    },
+    "Meta": {
+      "aliases": ["Meta", "Facebook", "Instagram", "Meta Platforms"],
+      "senders": ["@facebookmail.com", "@meta.com", "@facebook.com", "@fb.com"],
+      "subjects": ["receipt", "invoice", "payment", "ads", "advertising"],
+      "bodyPatterns": ["Facebook Ads", "Instagram", "advertising", "campaign"]
+    },
+    "MyParcel": {
+      "aliases": ["MyParcel", "Sendcloud"],
+      "senders": ["@myparcel.nl", "@myparcel.be", "@sendcloud.com"],
+      "subjects": ["factuur", "invoice", "maandoverzicht", "monthly"],
+      "bodyPatterns": ["verzending", "shipment", "pakket"]
+    },
+    "Google": {
+      "aliases": ["Google", "Google Ads", "Google Cloud"],
+      "senders": ["@google.com", "payments-noreply@google.com", "noreply@google.com"],
+      "subjects": ["receipt", "invoice", "payment", "billing", "Google Ads"],
+      "bodyPatterns": ["Google Ads", "Google Cloud", "advertising", "campaign"]
+    },
+    "Proximus": {
+      "aliases": ["Proximus", "Belgacom"],
+      "senders": ["@proximus.be", "@proximus.com"],
+      "subjects": ["facture", "factuur", "invoice", "rekening"],
+      "bodyPatterns": ["telecom", "mobile", "internet", "abonnement"]
+    },
+    "bpost": {
+      "aliases": ["bpost", "Belgian Post"],
+      "senders": ["@bpost.be", "@bpost.com"],
+      "subjects": ["facture", "factuur", "invoice", "envoi"],
+      "bodyPatterns": ["colis", "pakket", "timbre", "envoi"]
+    },
+    "DHL": {
+      "aliases": ["DHL", "DHL Express"],
+      "senders": ["@dhl.com", "@dhl.be"],
+      "subjects": ["invoice", "facture", "shipment"],
+      "bodyPatterns": ["shipment", "tracking", "delivery"]
+    },
+    "Amazon": {
+      "aliases": ["Amazon", "AWS"],
+      "senders": ["@amazon.com", "@amazon.be", "@amazon.nl", "@amazonaws.com"],
+      "subjects": ["invoice", "order", "receipt", "facture"],
+      "bodyPatterns": ["order", "AWS", "Amazon"]
+    },
+    "Coolblue": {
+      "aliases": ["Coolblue"],
+      "senders": ["@coolblue.be", "@coolblue.nl"],
+      "subjects": ["factuur", "invoice", "bestelling", "order"],
+      "bodyPatterns": ["bestelling", "order", "levering"]
+    },
+    "Bol.com": {
+      "aliases": ["Bol.com", "Bol"],
+      "senders": ["@bol.com"],
+      "subjects": ["factuur", "invoice", "bestelling"],
+      "bodyPatterns": ["bestelling", "order"]
+    },
+    "Telenet": {
+      "aliases": ["Telenet"],
+      "senders": ["@telenet.be"],
+      "subjects": ["facture", "factuur", "invoice"],
+      "bodyPatterns": ["internet", "tv", "mobile"]
+    }
+  },
+  "defaultSearch": {
+    "dateRangeDays": 30,
+    "maxResults": 50,
+    "priorityAccounts": ["info@pomandi.com"]
+  }
+}

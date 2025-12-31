@@ -17,6 +17,24 @@
       "args": [
         "/app/mcp-servers/agent-outputs-mcp/server.py"
       ]
+    },
+    "expense-tracker-mcp": {
+      "command": "python3",
+      "args": [
+        "/app/mcp-servers/expense-tracker-mcp/server.py"
+      ]
+    },
+    "godaddy-mail": {
+      "command": "python3",
+      "args": [
+        "/app/mcp-servers/godaddy-mail/server.py"
+      ]
+    },
+    "microsoft-outlook": {
+      "command": "python3",
+      "args": [
+        "/app/mcp-servers/microsoft-outlook/server.py"
+      ]
     }
   }
 }

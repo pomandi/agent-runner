@@ -44,6 +44,12 @@ case "$AGENT_NAME" in
     caption-generator)
         ALLOWED_TOOLS="mcp__caption-generator-mcp__*"
         ;;
+    invoice-finder)
+        ALLOWED_TOOLS="mcp__godaddy-mail__*,mcp__microsoft-outlook__*,mcp__expense-tracker-mcp__*,Read,Write,Bash,WebFetch"
+        ;;
+    invoice-extractor)
+        ALLOWED_TOOLS="mcp__expense-tracker-mcp__*,Read,WebFetch,Bash"
+        ;;
     *)
         ALLOWED_TOOLS="*"
         ;;
