@@ -140,9 +140,10 @@ async def debug_cli():
     import subprocess
     import os
 
-    # Check file existence
-    creds_path = Path("/root/.claude/.credentials.json")
-    settings_path = Path("/root/.claude/settings.json")
+    # Check file existence (use expanduser for non-root user)
+    home = os.path.expanduser("~")
+    creds_path = Path(f"{home}/.claude/.credentials.json")
+    settings_path = Path(f"{home}/.claude/settings.json")
     bundled_cli = Path("/usr/local/lib/python3.11/dist-packages/claude_agent_sdk/_bundled/claude")
     npm_cli = Path("/usr/local/bin/claude")
 

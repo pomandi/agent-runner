@@ -107,9 +107,11 @@ class SDKExecutor:
         """Initialize executor.
 
         Args:
-            mcp_config_path: Path to MCP config file (default: /root/.claude/.mcp.json)
+            mcp_config_path: Path to MCP config file (default: ~/.claude/.mcp.json)
         """
-        self.mcp_config_path = mcp_config_path or "/root/.claude/.mcp.json"
+        import os
+        default_path = os.path.expanduser("~/.claude/.mcp.json")
+        self.mcp_config_path = mcp_config_path or default_path
         self.mcp_servers = self._load_mcp_config()
 
         if not SDK_AVAILABLE:

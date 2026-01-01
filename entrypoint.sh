@@ -8,6 +8,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+# Claude home directory (non-root user required for Claude Code CLI)
+CLAUDE_HOME="/home/agent/.claude"
+
 echo -e "${BLUE}=========================================="
 echo -e "       AGENT RUNNER CONTAINER"
 echo -e "==========================================${NC}"
@@ -15,23 +18,26 @@ echo -e "${GREEN}Agent:${NC} $AGENT_NAME"
 echo -e "${GREEN}Task:${NC} $AGENT_TASK"
 echo -e "${GREEN}Schedule:${NC} ${AGENT_SCHEDULE:-None (manual/API only)}"
 echo -e "${GREEN}API:${NC} http://localhost:8080"
+echo -e "${GREEN}User:${NC} agent (non-root for Claude Code CLI)"
 echo -e "${GREEN}Time:${NC} $(date)"
 echo -e "${BLUE}==========================================${NC}"
 
 # Auto-create Claude credentials from environment variable (base64 encoded)
 if [ -n "$CLAUDE_CREDENTIALS_B64" ]; then
     echo -e "${GREEN}[OK]${NC} Creating credentials from CLAUDE_CREDENTIALS_B64 env var"
-    mkdir -p /root/.claude
-    echo "$CLAUDE_CREDENTIALS_B64" | base64 -d > /root/.claude/.credentials.json
-    chmod 600 /root/.claude/.credentials.json
+    mkdir -p $CLAUDE_HOME
+    echo "$CLAUDE_CREDENTIALS_B64" | base64 -d > $CLAUDE_HOME/.credentials.json
+    chown -R agent:agent $CLAUDE_HOME
+    chmod 600 $CLAUDE_HOME/.credentials.json
     echo -e "${GREEN}[OK]${NC} Claude credentials created successfully"
 elif [ -n "$CLAUDE_CREDENTIALS" ]; then
     echo -e "${GREEN}[OK]${NC} Creating credentials from CLAUDE_CREDENTIALS env var"
-    mkdir -p /root/.claude
-    echo "$CLAUDE_CREDENTIALS" > /root/.claude/.credentials.json
-    chmod 600 /root/.claude/.credentials.json
+    mkdir -p $CLAUDE_HOME
+    echo "$CLAUDE_CREDENTIALS" > $CLAUDE_HOME/.credentials.json
+    chown -R agent:agent $CLAUDE_HOME
+    chmod 600 $CLAUDE_HOME/.credentials.json
     echo -e "${GREEN}[OK]${NC} Claude credentials created successfully"
-elif [ -f "/root/.claude/.credentials.json" ]; then
+elif [ -f "$CLAUDE_HOME/.credentials.json" ]; then
     echo -e "${GREEN}[OK]${NC} Claude credentials found (mounted)"
 else
     echo -e "${YELLOW}[WARN]${NC} Claude credentials not found"
@@ -39,8 +45,8 @@ else
 fi
 
 # Create settings.json with bypassPermissions mode (required for SDK execution)
-mkdir -p /root/.claude
-cat > /root/.claude/settings.json << 'SETTINGS_EOF'
+mkdir -p $CLAUDE_HOME
+cat > $CLAUDE_HOME/settings.json << 'SETTINGS_EOF'
 {
   "permissions": {
     "allow": ["*"],
@@ -53,7 +59,8 @@ cat > /root/.claude/settings.json << 'SETTINGS_EOF'
   }
 }
 SETTINGS_EOF
-chmod 600 /root/.claude/settings.json
+chown -R agent:agent $CLAUDE_HOME
+chmod 600 $CLAUDE_HOME/settings.json
 echo -e "${GREEN}[OK]${NC} Claude settings.json created (bypassPermissions mode)"
 
 # Claude Code OAuth client_id (official)
@@ -65,7 +72,7 @@ refresh_oauth_token() {
     echo -e "${YELLOW}[TOKEN]${NC} Attempting to refresh OAuth token..."
 
     # Read current credentials
-    if [ ! -f "/root/.claude/.credentials.json" ]; then
+    if [ ! -f "$CLAUDE_HOME/.credentials.json" ]; then
         echo -e "${RED}[ERROR]${NC} No credentials file found"
         return 1
     fi
@@ -75,7 +82,7 @@ refresh_oauth_token() {
 import json
 import sys
 try:
-    with open('/root/.claude/.credentials.json') as f:
+    with open('$CLAUDE_HOME/.credentials.json') as f:
         data = json.load(f)
     oauth = data.get('claudeAiOauth', {})
     print(oauth.get('refreshToken', ''))
@@ -97,11 +104,11 @@ except Exception as e:
         -d "grant_type=refresh_token" \
         -d "refresh_token=$REFRESH_TOKEN" \
         -d "client_id=$CLAUDE_CLIENT_ID" 2>/dev/null)
-    
+
     # Check if response contains access_token
     if echo "$RESPONSE" | grep -q "access_token"; then
         echo -e "${GREEN}[TOKEN]${NC} Token refresh successful!"
-        
+
         # Update credentials file with new tokens using Python
         python3 -c "
 import json
@@ -110,10 +117,10 @@ import sys
 response = '''$RESPONSE'''
 try:
     new_tokens = json.loads(response)
-    
-    with open('/root/.claude/.credentials.json') as f:
+
+    with open('$CLAUDE_HOME/.credentials.json') as f:
         creds = json.load(f)
-    
+
     # Update OAuth tokens
     if 'claudeAiOauth' in creds:
         creds['claudeAiOauth']['accessToken'] = new_tokens.get('access_token', creds['claudeAiOauth'].get('accessToken'))
@@ -122,10 +129,10 @@ try:
         if 'expires_in' in new_tokens:
             import time
             creds['claudeAiOauth']['expiresAt'] = int(time.time() * 1000) + (new_tokens['expires_in'] * 1000)
-    
-    with open('/root/.claude/.credentials.json', 'w') as f:
+
+    with open('$CLAUDE_HOME/.credentials.json', 'w') as f:
         json.dump(creds, f)
-    
+
     print('Credentials updated successfully')
 except Exception as e:
     print(f'Error updating credentials: {e}', file=sys.stderr)
@@ -141,12 +148,12 @@ except Exception as e:
 
 # Check token expiry and refresh if needed
 check_and_refresh_token() {
-    if [ ! -f "/root/.claude/.credentials.json" ]; then
+    if [ ! -f "$CLAUDE_HOME/.credentials.json" ]; then
         return 0
     fi
-    
+
     echo -e "${YELLOW}[TOKEN]${NC} Checking OAuth token expiry..."
-    
+
     # Check if token is expired using Python
     EXPIRED=$(python3 -c "
 import json
@@ -154,18 +161,18 @@ import time
 import sys
 
 try:
-    with open('/root/.claude/.credentials.json') as f:
+    with open('$CLAUDE_HOME/.credentials.json') as f:
         data = json.load(f)
-    
+
     oauth = data.get('claudeAiOauth', {})
     expires_at = oauth.get('expiresAt', 0)
-    
+
     # Current time in milliseconds
     now = int(time.time() * 1000)
-    
+
     # Add 5 minute buffer
     buffer = 5 * 60 * 1000
-    
+
     if expires_at > 0 and (expires_at - buffer) < now:
         print('true')
     else:
@@ -176,7 +183,7 @@ except Exception as e:
     print('false')
     print(f'Error checking token: {e}', file=sys.stderr)
 " 2>&1)
-    
+
     if echo "$EXPIRED" | head -1 | grep -q "true"; then
         echo -e "${YELLOW}[TOKEN]${NC} Token expired or expiring soon, refreshing..."
         refresh_oauth_token
@@ -189,9 +196,10 @@ except Exception as e:
 # Run token check and refresh
 check_and_refresh_token
 
-# Copy MCP config
+# Copy MCP config to agent home
 if [ -f "/app/.mcp.json" ]; then
-    cp /app/.mcp.json /root/.claude/.mcp.json
+    cp /app/.mcp.json $CLAUDE_HOME/.mcp.json
+    chown agent:agent $CLAUDE_HOME/.mcp.json
     echo -e "${GREEN}[OK]${NC} MCP config copied"
 fi
 
@@ -224,8 +232,11 @@ service cron start
 echo -e "${GREEN}[OK]${NC} Cron daemon started"
 
 echo -e "${BLUE}==========================================${NC}"
-echo -e "${GREEN}[API]${NC} Starting API server on port 8080..."
+echo -e "${GREEN}[API]${NC} Starting API server on port 8080 as user 'agent'..."
 echo -e "${BLUE}==========================================${NC}"
 
-# Start API server (this keeps the container running)
-exec python3 /app/api.py
+# Ensure /app is writable by agent
+chown -R agent:agent /app/logs /app/data
+
+# Start API server as non-root user (required for Claude Code CLI)
+exec gosu agent python3 /app/api.py

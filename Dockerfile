@@ -5,6 +5,7 @@
 # - Config-driven agents (agents.yaml)
 # - Scalable: add agents via YAML, no code changes
 # - Uses ~/.claude/.credentials.json for auth (Claude Max subscription)
+# - Runs as non-root user (required for Claude Code CLI)
 
 FROM node:20-slim
 
@@ -21,7 +22,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     fonts-dejavu-core \
     fonts-liberation \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user for Claude Code (required - CLI refuses to run with root+skip-permissions)
+RUN groupadd -r agent && useradd -r -g agent -d /home/agent -s /bin/bash -m agent
 
 # Install Claude CLI globally
 RUN npm install -g @anthropic-ai/claude-code
@@ -29,40 +34,43 @@ RUN npm install -g @anthropic-ai/claude-code
 # Install claude-code-logger for real-time visibility
 RUN npm install -g claude-code-logger
 
-# Create directories
+# Create directories with proper ownership
 WORKDIR /app
-RUN mkdir -p /app/logs /app/agents /app/mcp-servers /app/data/visual-content /root/.claude
+RUN mkdir -p /app/logs /app/agents /app/mcp-servers /app/data/visual-content /home/agent/.claude \
+    && chown -R agent:agent /app /home/agent
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt /app/requirements.txt
 RUN pip3 install --break-system-packages -r /app/requirements.txt
 
 # Copy MCP servers
-COPY mcp-servers/ /app/mcp-servers/
+COPY --chown=agent:agent mcp-servers/ /app/mcp-servers/
 
 # Copy agents from repo (built into container)
-COPY agents/ /app/agents/
+COPY --chown=agent:agent agents/ /app/agents/
 
 # Copy MCP config for Claude
-COPY .mcp.json /app/.mcp.json
+COPY --chown=agent:agent .mcp.json /app/.mcp.json
 
 # Copy scripts and API
 COPY entrypoint.sh /entrypoint.sh
-COPY schedule.sh /app/schedule.sh
-COPY run-agent.sh /app/run-agent.sh
+COPY --chown=agent:agent schedule.sh /app/schedule.sh
+COPY --chown=agent:agent run-agent.sh /app/run-agent.sh
 RUN chmod +x /entrypoint.sh /app/schedule.sh /app/run-agent.sh
 
 # Copy SDK-based API (v2 architecture)
-COPY config/ /app/config/
-COPY agent_registry.py /app/agent_registry.py
-COPY sdk_executor.py /app/sdk_executor.py
-COPY api.py /app/api.py
+COPY --chown=agent:agent config/ /app/config/
+COPY --chown=agent:agent agent_registry.py /app/agent_registry.py
+COPY --chown=agent:agent sdk_executor.py /app/sdk_executor.py
+COPY --chown=agent:agent api.py /app/api.py
 
 # Environment variables
 ENV AGENT_NAME=feed-publisher
 ENV AGENT_TASK="Run the agent task"
 ENV LOG_LEVEL=verbose
 ENV AGENT_SCHEDULE=""
+ENV HOME=/home/agent
+ENV USER=agent
 
 # Expose ports: 8000 for logger, 8080 for API
 EXPOSE 8000 8080
