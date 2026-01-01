@@ -218,6 +218,70 @@ async def debug_cli():
     return result
 
 
+@app.post("/token/refresh")
+async def refresh_token():
+    """Manually refresh Claude OAuth token."""
+    import time
+    import httpx
+
+    CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+    creds_path = Path(os.path.expanduser("~/.claude/.credentials.json"))
+
+    if not creds_path.exists():
+        raise HTTPException(status_code=404, detail="Credentials file not found")
+
+    try:
+        with open(creds_path) as f:
+            creds = json.load(f)
+
+        oauth = creds.get("claudeAiOauth", {})
+        refresh_token = oauth.get("refreshToken")
+
+        if not refresh_token:
+            raise HTTPException(status_code=400, detail="No refresh token found")
+
+        # Call Anthropic OAuth refresh endpoint
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://console.anthropic.com/v1/oauth/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "client_id": CLAUDE_CLIENT_ID
+                }
+            )
+
+        if response.status_code != 200:
+            return {
+                "success": False,
+                "error": f"Refresh failed: {response.status_code}",
+                "response": response.text[:500]
+            }
+
+        new_tokens = response.json()
+
+        # Update credentials
+        if "access_token" in new_tokens:
+            creds["claudeAiOauth"]["accessToken"] = new_tokens["access_token"]
+        if "refresh_token" in new_tokens:
+            creds["claudeAiOauth"]["refreshToken"] = new_tokens["refresh_token"]
+        if "expires_in" in new_tokens:
+            creds["claudeAiOauth"]["expiresAt"] = int(time.time() * 1000) + (new_tokens["expires_in"] * 1000)
+
+        with open(creds_path, "w") as f:
+            json.dump(creds, f)
+
+        return {
+            "success": True,
+            "message": "Token refreshed successfully",
+            "expiresAt": creds["claudeAiOauth"].get("expiresAt")
+        }
+
+    except Exception as e:
+        logger.error(f"Token refresh error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/agents")
 async def list_agents():
     """List all registered agents with their configuration."""
