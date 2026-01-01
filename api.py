@@ -186,7 +186,7 @@ async def debug_cli():
                 capture_output=True,
                 text=True,
                 timeout=30,
-                env={**os.environ, "HOME": "/root"}
+                env={**os.environ, "HOME": os.path.expanduser("~")}
             )
             result["bundled_cli_version"] = {
                 "stdout": proc.stdout,
@@ -205,7 +205,7 @@ async def debug_cli():
                 capture_output=True,
                 text=True,
                 timeout=60,
-                env={**os.environ, "HOME": "/root"}
+                env={**os.environ, "HOME": os.path.expanduser("~")}
             )
             result["simple_prompt_test"] = {
                 "stdout": proc.stdout[:500] if proc.stdout else "",
