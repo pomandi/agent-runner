@@ -134,6 +134,89 @@ async def status():
     }
 
 
+@app.get("/debug/cli")
+async def debug_cli():
+    """Debug endpoint to test bundled CLI directly."""
+    import subprocess
+    import os
+
+    # Check file existence
+    creds_path = Path("/root/.claude/.credentials.json")
+    settings_path = Path("/root/.claude/settings.json")
+    bundled_cli = Path("/usr/local/lib/python3.11/dist-packages/claude_agent_sdk/_bundled/claude")
+    npm_cli = Path("/usr/local/bin/claude")
+
+    result = {
+        "credentials_exists": creds_path.exists(),
+        "settings_exists": settings_path.exists(),
+        "bundled_cli_exists": bundled_cli.exists(),
+        "npm_cli_exists": npm_cli.exists(),
+        "HOME": os.environ.get("HOME", "not set"),
+        "USER": os.environ.get("USER", "not set"),
+    }
+
+    # Read settings.json content
+    if settings_path.exists():
+        try:
+            result["settings_content"] = settings_path.read_text()
+        except Exception as e:
+            result["settings_error"] = str(e)
+
+    # Check credentials content (masked)
+    if creds_path.exists():
+        try:
+            import json
+            creds = json.loads(creds_path.read_text())
+            oauth = creds.get("claudeAiOauth", {})
+            result["credentials_info"] = {
+                "hasAccessToken": "accessToken" in oauth,
+                "hasRefreshToken": "refreshToken" in oauth,
+                "expiresAt": oauth.get("expiresAt"),
+                "subscriptionType": oauth.get("subscriptionType"),
+            }
+        except Exception as e:
+            result["credentials_error"] = str(e)
+
+    # Try running bundled CLI with --version
+    if bundled_cli.exists():
+        try:
+            proc = subprocess.run(
+                [str(bundled_cli), "--version"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env={**os.environ, "HOME": "/root"}
+            )
+            result["bundled_cli_version"] = {
+                "stdout": proc.stdout,
+                "stderr": proc.stderr,
+                "returncode": proc.returncode
+            }
+        except Exception as e:
+            result["bundled_cli_error"] = str(e)
+
+    # Try a simple prompt with the bundled CLI
+    if bundled_cli.exists():
+        try:
+            proc = subprocess.run(
+                [str(bundled_cli), "--print", "--dangerously-skip-permissions"],
+                input="Say 'hello' and nothing else",
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env={**os.environ, "HOME": "/root"}
+            )
+            result["simple_prompt_test"] = {
+                "stdout": proc.stdout[:500] if proc.stdout else "",
+                "stderr": proc.stderr[:1000] if proc.stderr else "",
+                "returncode": proc.returncode
+            }
+        except Exception as e:
+            result["simple_prompt_error"] = str(e)
+
+    return result
+
+
 @app.get("/agents")
 async def list_agents():
     """List all registered agents with their configuration."""
