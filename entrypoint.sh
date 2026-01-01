@@ -38,6 +38,24 @@ else
     echo -e "${YELLOW}[WARN]${NC} Set CLAUDE_CREDENTIALS_B64 env var with base64 encoded JSON"
 fi
 
+# Create settings.json with bypassPermissions mode (required for SDK execution)
+mkdir -p /root/.claude
+cat > /root/.claude/settings.json << 'SETTINGS_EOF'
+{
+  "permissions": {
+    "allow": ["*"],
+    "deny": [],
+    "ask": [],
+    "defaultMode": "bypassPermissions"
+  },
+  "sandbox": {
+    "autoAllowBashIfSandboxed": true
+  }
+}
+SETTINGS_EOF
+chmod 600 /root/.claude/settings.json
+echo -e "${GREEN}[OK]${NC} Claude settings.json created (bypassPermissions mode)"
+
 # Claude Code OAuth client_id (official)
 # Source: https://github.com/RavenStorm-bit/claude-token-refresh
 CLAUDE_CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
