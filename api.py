@@ -119,7 +119,7 @@ async def health():
 @app.get("/status")
 async def status():
     """Get current agent status and registry info."""
-    creds_exist = Path("/root/.claude/.credentials.json").exists()
+    creds_exist = Path(os.path.expanduser("~/.claude/.credentials.json")).exists()
 
     return {
         "container": "agent-runner",
@@ -303,7 +303,7 @@ async def run_agent(request: RunRequest, background_tasks: BackgroundTasks):
             detail="Claude Agent SDK not available"
         )
 
-    if not Path("/root/.claude/.credentials.json").exists():
+    if not Path(os.path.expanduser("~/.claude/.credentials.json")).exists():
         raise HTTPException(
             status_code=503,
             detail="Claude credentials not found"
