@@ -87,11 +87,11 @@ try:
     remaining_ms = expires_at - now
     remaining_hours = remaining_ms / 1000 / 60 / 60
 
-    # Refresh if less than 2 hours remaining (buffer for 6-hour cron)
-    needs_refresh = remaining_hours < 2
+    # Always refresh - keep tokens fresh every hour
+    needs_refresh = True
 
     print(f'{remaining_hours:.1f}')
-    print('true' if needs_refresh else 'false')
+    print('true')  # Always refresh
     print(refresh_token)
 except Exception as e:
     print('0')
@@ -105,11 +105,7 @@ NEEDS_REFRESH=$(echo "$TOKEN_INFO" | sed -n '2p')
 REFRESH_TOKEN=$(echo "$TOKEN_INFO" | sed -n '3p')
 
 log_info "Token remaining: ${REMAINING_HOURS} hours"
-
-if [ "$NEEDS_REFRESH" != "true" ]; then
-    log_info "Token still valid, no refresh needed"
-    exit 0
-fi
+log_info "Forcing token refresh (hourly refresh enabled)"
 
 if [ -z "$REFRESH_TOKEN" ]; then
     log_error "No refresh token found in credentials"
