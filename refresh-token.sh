@@ -48,10 +48,11 @@ update_coolify_env() {
     NEW_CREDS_B64=$(cat "$CREDENTIALS_FILE" | base64 -w 0)
 
     # Update via Coolify API (bulk update endpoint)
+    # Note: Coolify bulk update expects {"data": [...]} wrapper
     RESPONSE=$(curl -s -X PATCH "${COOLIFY_API_URL}/applications/${COOLIFY_APP_UUID}/envs/bulk" \
         -H "Authorization: Bearer ${COOLIFY_API_TOKEN}" \
         -H "Content-Type: application/json" \
-        -d "[{\"key\": \"CLAUDE_CREDENTIALS_B64\", \"value\": \"${NEW_CREDS_B64}\"}]" 2>/dev/null)
+        -d "{\"data\": [{\"key\": \"CLAUDE_CREDENTIALS_B64\", \"value\": \"${NEW_CREDS_B64}\"}]}" 2>/dev/null)
 
     if echo "$RESPONSE" | grep -q "CLAUDE_CREDENTIALS_B64"; then
         log_info "Coolify env var updated successfully - token will persist across restarts"
