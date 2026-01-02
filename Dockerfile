@@ -56,7 +56,8 @@ COPY --chown=agent:agent .mcp.json /app/.mcp.json
 COPY entrypoint.sh /entrypoint.sh
 COPY --chown=agent:agent schedule.sh /app/schedule.sh
 COPY --chown=agent:agent run-agent.sh /app/run-agent.sh
-RUN chmod +x /entrypoint.sh /app/schedule.sh /app/run-agent.sh
+COPY --chown=agent:agent refresh-token.sh /app/refresh-token.sh
+RUN chmod +x /entrypoint.sh /app/schedule.sh /app/run-agent.sh /app/refresh-token.sh
 
 # Copy SDK-based API (v2 architecture)
 COPY --chown=agent:agent config/ /app/config/

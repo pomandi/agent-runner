@@ -13,12 +13,14 @@ LOG_PREFIX="[TOKEN-REFRESH $(date '+%Y-%m-%d %H:%M:%S')]"
 
 # Claude Code OAuth client_id (official)
 CLAUDE_CLIENT_ID="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-CREDENTIALS_FILE="/root/.claude/.credentials.json"
+CREDENTIALS_FILE="/home/agent/.claude/.credentials.json"
 
 # Coolify API configuration (for persisting refreshed tokens)
-COOLIFY_API_URL="${COOLIFY_API_URL:-https://coolify.faric.cloud/api/v1}"
+# Uses Coolify's auto-injected env vars
+COOLIFY_API_URL="${COOLIFY_API_URL:-http://46.224.117.155:8000/api/v1}"
 COOLIFY_API_TOKEN="${COOLIFY_API_TOKEN:-}"
-COOLIFY_APP_UUID="${COOLIFY_APP_UUID:-pss0wkokscwckssws8g4gow8}"
+# COOLIFY_RESOURCE_UUID is auto-injected by Coolify
+COOLIFY_APP_UUID="${COOLIFY_RESOURCE_UUID:-${COOLIFY_APP_UUID:-pss0wkokscwckssws8g4gow8}}"
 
 log_info() {
     echo -e "${GREEN}${LOG_PREFIX}${NC} $1"
