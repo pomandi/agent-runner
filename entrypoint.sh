@@ -207,9 +207,9 @@ fi
 echo -e "${YELLOW}[CRON]${NC} Setting up cron schedules..."
 crontab -r 2>/dev/null || true
 
-# Always add token refresh cron (every 6 hours)
-CRON_LINES="0 */6 * * * /app/refresh-token.sh >> /app/logs/token-refresh.log 2>&1\n"
-echo -e "${GREEN}[OK]${NC} Token refresh scheduled: every 6 hours"
+# Always add token refresh cron (every 1 hour for safety)
+CRON_LINES="0 * * * * /app/refresh-token.sh >> /app/logs/token-refresh.log 2>&1\n"
+echo -e "${GREEN}[OK]${NC} Token refresh scheduled: every 1 hour"
 
 # Add agent schedule if provided
 if [ -n "$AGENT_SCHEDULE" ]; then
