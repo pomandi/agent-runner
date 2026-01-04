@@ -15,6 +15,7 @@ from pydantic import BaseModel
 import uvicorn
 
 from sdk_runner import run_agent
+from agents import list_agents, get_agent_info
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,6 +57,22 @@ class InvoiceMatchResponse(BaseModel):
     error: Optional[str] = None
 
 
+class RunAgentRequest(BaseModel):
+    agent: str
+    task: Optional[str] = "Run the default agent task"
+
+
+class RunAgentResponse(BaseModel):
+    success: bool
+    agent: str
+    task: str
+    duration_seconds: float
+    tool_calls: List[str]
+    final_result: Optional[str] = None
+    cost_usd: Optional[float] = None
+    error: Optional[str] = None
+
+
 # ============================================================
 # Endpoints
 # ============================================================
@@ -72,6 +89,63 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
+
+
+@app.get("/api/agents")
+async def get_agents():
+    """List all available agents."""
+    agents = list_agents()
+    return {
+        "agents": [get_agent_info(name) for name in agents]
+    }
+
+
+@app.post("/api/run", response_model=RunAgentResponse)
+async def run_agent_endpoint(request: RunAgentRequest):
+    """
+    Run any agent with a task.
+
+    Example:
+    POST /api/run
+    {
+        "agent": "feed-publisher",
+        "task": "Publish post to Pomandi"
+    }
+    """
+    start_time = datetime.now()
+
+    try:
+        result = await run_agent(
+            agent_name=request.agent,
+            task=request.task,
+            use_tools=False,
+            use_hooks=False
+        )
+
+        if not result.get('success'):
+            logger.error(f"Agent {request.agent} failed: {result.get('error')}")
+
+        return RunAgentResponse(
+            success=result.get('success', False),
+            agent=result.get('agent', request.agent),
+            task=result.get('task', request.task),
+            duration_seconds=result.get('duration_seconds', 0.0),
+            tool_calls=result.get('tool_calls', []),
+            final_result=result.get('final_result'),
+            cost_usd=result.get('cost_usd'),
+            error=result.get('error')
+        )
+
+    except Exception as e:
+        logger.error(f"Run agent error: {e}")
+        return RunAgentResponse(
+            success=False,
+            agent=request.agent,
+            task=request.task,
+            duration_seconds=(datetime.now() - start_time).total_seconds(),
+            tool_calls=[],
+            error=str(e)
+        )
 
 
 @app.post("/api/invoice-match", response_model=InvoiceMatchResponse)
