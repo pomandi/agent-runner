@@ -35,6 +35,7 @@ COPY --chown=agent:agent agents.py /app/agents.py
 COPY --chown=agent:agent sdk_runner.py /app/sdk_runner.py
 COPY --chown=agent:agent api.py /app/api.py
 COPY --chown=agent:agent hooks.py /app/hooks.py
+COPY --chown=agent:agent monitoring.py /app/monitoring.py
 COPY --chown=agent:agent entrypoint.sh /app/entrypoint.sh
 COPY --chown=agent:agent tools/ /app/tools/
 
