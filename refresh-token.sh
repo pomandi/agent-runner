@@ -70,7 +70,7 @@ if [ ! -f "$CREDENTIALS_FILE" ]; then
     exit 1
 fi
 
-# Get token info using Python
+# Get token info using Python (with token preview for verification)
 TOKEN_INFO=$(python3 -c "
 import json
 import time
@@ -83,29 +83,40 @@ try:
     oauth = data.get('claudeAiOauth', {})
     expires_at = oauth.get('expiresAt', 0)
     refresh_token = oauth.get('refreshToken', '')
+    access_token = oauth.get('accessToken', '')
 
     now = int(time.time() * 1000)
     remaining_ms = expires_at - now
     remaining_hours = remaining_ms / 1000 / 60 / 60
 
-    # Always refresh - keep tokens fresh every hour
-    needs_refresh = True
+    # Token preview (first 10 + last 10 chars)
+    if access_token:
+        token_preview = access_token[:10] + '...' + access_token[-10:]
+    else:
+        token_preview = 'NO_TOKEN'
 
     print(f'{remaining_hours:.1f}')
     print('true')  # Always refresh
     print(refresh_token)
+    print(token_preview)
 except Exception as e:
     print('0')
     print('true')
     print('')
+    print('ERROR')
     sys.exit(1)
 " 2>/dev/null)
 
 REMAINING_HOURS=$(echo "$TOKEN_INFO" | sed -n '1p')
 NEEDS_REFRESH=$(echo "$TOKEN_INFO" | sed -n '2p')
 REFRESH_TOKEN=$(echo "$TOKEN_INFO" | sed -n '3p')
+OLD_TOKEN_PREVIEW=$(echo "$TOKEN_INFO" | sed -n '4p')
 
+log_info "========================================"
+log_info "CRON TOKEN REFRESH STARTING"
+log_info "========================================"
 log_info "Token remaining: ${REMAINING_HOURS} hours"
+log_info "OLD Token: ${OLD_TOKEN_PREVIEW}"
 log_info "Forcing token refresh (hourly refresh enabled)"
 
 if [ -z "$REFRESH_TOKEN" ]; then
@@ -157,17 +168,44 @@ except Exception as e:
 "
 
     if [ $? -eq 0 ]; then
-        NEW_HOURS=$(python3 -c "
+        # Get new token info for verification
+        NEW_TOKEN_INFO=$(python3 -c "
 import json, time
 with open('$CREDENTIALS_FILE') as f:
     d = json.load(f)
-expires = d.get('claudeAiOauth', {}).get('expiresAt', 0)
-print(f'{(expires - time.time()*1000)/1000/60/60:.1f}')
+oauth = d.get('claudeAiOauth', {})
+expires = oauth.get('expiresAt', 0)
+access_token = oauth.get('accessToken', '')
+hours = (expires - time.time()*1000)/1000/60/60
+if access_token:
+    preview = access_token[:10] + '...' + access_token[-10:]
+else:
+    preview = 'NO_TOKEN'
+print(f'{hours:.1f}')
+print(preview)
 " 2>/dev/null)
-        log_info "Token refresh successful! New token valid for ${NEW_HOURS} hours"
+        NEW_HOURS=$(echo "$NEW_TOKEN_INFO" | sed -n '1p')
+        NEW_TOKEN_PREVIEW=$(echo "$NEW_TOKEN_INFO" | sed -n '2p')
+
+        log_info "========================================"
+        log_info "TOKEN REFRESH SUCCESSFUL!"
+        log_info "========================================"
+        log_info "NEW Token: ${NEW_TOKEN_PREVIEW}"
+        log_info "Valid for: ${NEW_HOURS} hours"
+
+        # Verify token actually changed
+        if [ "$OLD_TOKEN_PREVIEW" != "$NEW_TOKEN_PREVIEW" ]; then
+            log_info "✓ TOKEN CHANGED - Refresh verified!"
+        else
+            log_warn "⚠ TOKEN SAME - May not have refreshed"
+        fi
 
         # CRITICAL: Also update Coolify env var to persist across container restarts
         update_coolify_env
+
+        log_info "========================================"
+        log_info "CRON TOKEN REFRESH COMPLETE"
+        log_info "========================================"
 
         exit 0
     else
