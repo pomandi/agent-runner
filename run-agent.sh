@@ -5,7 +5,8 @@
 set -e
 
 export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
-export HOME="/root"
+export HOME="/home/agent"
+export CLAUDE_HOME="/home/agent/.claude"
 
 # Colors
 GREEN='\033[0;32m'
@@ -26,13 +27,13 @@ echo ""
 
 # Ensure MCP config is in place
 if [ -f "/app/.mcp.json" ]; then
-    cp /app/.mcp.json /root/.claude/.mcp.json
+    cp /app/.mcp.json $CLAUDE_HOME/.mcp.json 2>/dev/null || true
 fi
 
 # Check credentials
-if [ ! -f "/root/.claude/.credentials.json" ]; then
-    echo -e "${RED}[ERROR]${NC} Claude credentials not found!"
-    echo -e "${YELLOW}[FIX]${NC} Run: docker cp /root/.claude/.credentials.json <container>:/root/.claude/"
+if [ ! -f "$CLAUDE_HOME/.credentials.json" ]; then
+    echo -e "${RED}[ERROR]${NC} Claude credentials not found at $CLAUDE_HOME/.credentials.json!"
+    echo -e "${YELLOW}[FIX]${NC} Ensure credentials are properly configured"
     exit 1
 fi
 
@@ -58,7 +59,7 @@ esac
 # Run Claude CLI with MCP
 cd /app
 claude \
-    --mcp-config /root/.claude/.mcp.json \
+    --mcp-config $CLAUDE_HOME/.mcp.json \
     --allowedTools "$ALLOWED_TOOLS" \
     --verbose \
     --print "$AGENT_TASK" 2>&1 | tee "$LOG_FILE"

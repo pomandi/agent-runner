@@ -203,6 +203,25 @@ if [ -f "/app/.mcp.json" ]; then
     echo -e "${GREEN}[OK]${NC} MCP config copied"
 fi
 
+# Save environment variables for cron jobs
+mkdir -p /app/data
+cat > /app/data/agent-env.sh << ENV_EOF
+# Environment variables for scheduled agent runs
+export AGENT_NAME="${AGENT_NAME}"
+export AGENT_TASK="${AGENT_TASK}"
+export AGENT_SCHEDULE="${AGENT_SCHEDULE}"
+export META_ACCESS_TOKEN="${META_ACCESS_TOKEN}"
+export AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}"
+export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}"
+export AWS_S3_BUCKET="${AWS_S3_BUCKET}"
+export R2_ENDPOINT="${R2_ENDPOINT}"
+export AGENT_OUTPUTS_DB_URL="${AGENT_OUTPUTS_DB_URL}"
+export PATH="/usr/local/bin:/usr/bin:/bin:\$PATH"
+export HOME="/home/agent"
+ENV_EOF
+chmod 600 /app/data/agent-env.sh
+echo -e "${GREEN}[OK]${NC} Environment variables saved for cron"
+
 # Setup cron schedules
 echo -e "${YELLOW}[CRON]${NC} Setting up cron schedules..."
 crontab -r 2>/dev/null || true
