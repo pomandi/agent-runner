@@ -312,11 +312,10 @@ def main():
     agent_name = args[0]
     task = " ".join(args[1:]) if len(args) > 1 else "Run the default task"
 
-    results = anyio.run(run_agent(
-        agent_name, task,
-        use_tools=use_full,
-        use_hooks=use_full
-    ))
+    async def _run():
+        return await run_agent(agent_name, task, use_tools=use_full, use_hooks=use_full)
+
+    results = anyio.run(_run)
 
     # Summary
     print("\n" + "=" * 60)
