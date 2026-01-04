@@ -16,6 +16,7 @@ import sys
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import anyio
 from dotenv import load_dotenv
@@ -28,6 +29,14 @@ from claude_agent_sdk import (
 
 # Import agent definitions
 from agents import get_agent, list_agents, AGENTS
+
+# Import monitoring client (optional)
+try:
+    from monitoring import DashboardClient
+    MONITORING_AVAILABLE = True
+except ImportError:
+    MONITORING_AVAILABLE = False
+    DashboardClient = None
 
 # Setup logging with valid level mapping
 _log_level_map = {
@@ -144,11 +153,18 @@ async def run_agent(
     logger.info(f"Starting agent: {agent.name}")
     logger.info(f"Description: {agent.description}")
 
+    # Initialize monitoring client (if available and configured)
+    monitor: Optional['DashboardClient'] = None
+    if MONITORING_AVAILABLE and os.getenv('DASHBOARD_URL'):
+        monitor = DashboardClient()
+        await monitor.start_execution(agent.name, task)
+
     # Build options
     options_kwargs = {
         'system_prompt': agent.system_prompt,
         'permission_mode': 'acceptEdits',
         'max_turns': agent.max_turns,
+        'stderr': lambda msg: None,  # Suppress "Using bundled Claude Code CLI" logs
     }
 
     # Load MCP servers based on agent tool requirements
@@ -193,23 +209,35 @@ async def run_agent(
             # Full SDK mode with ClaudeSDKClient
             async with ClaudeSDKClient(options=options) as client:
                 async for message in client.process_query(task):
-                    _process_message(message, results)
+                    await _process_message(message, results, monitor)
         else:
             # Simple mode with query()
             async for message in query(prompt=task, options=options):
-                _process_message(message, results)
+                await _process_message(message, results, monitor)
 
         print()  # Newline after streaming
+        results['success'] = True
 
     except Exception as e:
         logger.error(f"Agent failed: {e}")
         results['error'] = str(e)
 
     results['duration_seconds'] = (datetime.now() - start_time).total_seconds()
+
+    # Complete monitoring
+    if monitor:
+        status = 'completed' if results.get('success') else 'failed'
+        await monitor.complete_execution(
+            status=status,
+            cost_usd=results.get('cost_usd'),
+            error_message=results.get('error')
+        )
+        await monitor.close()
+
     return results
 
 
-def _process_message(message, results):
+async def _process_message(message, results, monitor=None):
     """Process a message from the SDK."""
     if hasattr(message, 'content'):
         for block in message.content:
@@ -218,6 +246,11 @@ def _process_message(message, results):
             elif hasattr(block, 'name'):
                 logger.info(f"Tool: {block.name}")
                 results['tool_calls'].append(block.name)
+
+                # Report tool call to monitoring
+                if monitor:
+                    span_id = await monitor.add_span(block.name, {})
+                    # Note: We don't have output yet, span will be auto-completed
 
     if hasattr(message, 'result'):
         results['final_result'] = message.result
