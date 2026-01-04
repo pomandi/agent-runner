@@ -48,7 +48,7 @@ USER agent
 
 # Environment variables
 ENV RUN_MODE=api
-ENV API_PORT=8000
+ENV API_PORT=8080
 ENV AGENT_NAME=feed-publisher
 ENV AGENT_TASK="Run the default agent task"
 ENV LOG_LEVEL=INFO
@@ -59,9 +59,9 @@ WORKDIR /app
 
 # Healthcheck (checks API server or SDK)
 HEALTHCHECK --interval=60s --timeout=10s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8000/health || python3 -c "import claude_agent_sdk; print('OK')" || exit 1
+    CMD curl -f http://localhost:8080/health || python3 -c "import claude_agent_sdk; print('OK')" || exit 1
 
 # Expose API port
-EXPOSE 8000
+EXPOSE 8080
 
 ENTRYPOINT ["/app/entrypoint.sh"]

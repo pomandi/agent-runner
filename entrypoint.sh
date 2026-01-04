@@ -41,7 +41,7 @@ KEEP_ALIVE="${KEEP_ALIVE:-false}"
 
 # Check run mode
 RUN_MODE="${RUN_MODE:-sdk}"
-API_PORT="${API_PORT:-8000}"
+API_PORT="${API_PORT:-8080}"
 
 if [ "$RUN_MODE" = "api" ]; then
     echo "Mode: API Server"
