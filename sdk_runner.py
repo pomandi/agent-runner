@@ -161,11 +161,16 @@ async def run_agent(
         await monitor.start_trace(agent.name, task)
 
     # Build options
+    def stderr_handler(msg: str):
+        """Filter noisy messages but log real errors."""
+        if msg and 'Using bundled Claude Code CLI' not in msg:
+            logger.warning(f"CLI stderr: {msg}")
+
     options_kwargs = {
         'system_prompt': agent.system_prompt,
         'permission_mode': 'acceptAll',  # Accept all tool calls automatically
         'max_turns': agent.max_turns,
-        'stderr': lambda msg: None,  # Suppress "Using bundled Claude Code CLI" logs
+        'stderr': stderr_handler,  # Log errors, filter noise
     }
 
     # Load MCP servers based on agent tool requirements
