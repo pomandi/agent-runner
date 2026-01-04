@@ -216,6 +216,10 @@ export AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}"
 export AWS_S3_BUCKET="${AWS_S3_BUCKET}"
 export R2_ENDPOINT="${R2_ENDPOINT}"
 export AGENT_OUTPUTS_DB_URL="${AGENT_OUTPUTS_DB_URL}"
+# Coolify API for token persistence
+export COOLIFY_API_TOKEN="${COOLIFY_API_TOKEN}"
+export COOLIFY_API_URL="${COOLIFY_API_URL:-http://46.224.117.155:8000/api/v1}"
+export COOLIFY_RESOURCE_UUID="${COOLIFY_RESOURCE_UUID:-pss0wkokscwckssws8g4gow8}"
 export PATH="/usr/local/bin:/usr/bin:/bin:\$PATH"
 export HOME="/home/agent"
 ENV_EOF

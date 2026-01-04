@@ -1,7 +1,12 @@
 #!/bin/bash
 # Auto Token Refresh Script for Claude OAuth
-# Runs via cron every 6 hours to keep tokens fresh
+# Runs via cron every hour to keep tokens fresh
 # ALSO updates Coolify env var to persist across container restarts
+
+# Source environment variables saved during container startup
+if [ -f "/app/data/agent-env.sh" ]; then
+    source /app/data/agent-env.sh
+fi
 
 # Colors for output
 RED='\033[0;31m'
