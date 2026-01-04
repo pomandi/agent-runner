@@ -1,83 +1,61 @@
-# Agent Runner Container v2.0 - SDK-Only Architecture
+# Claude Agent SDK Runner Container
 #
-# Key features:
-# - Uses Claude Agent SDK (not CLI subprocess)
-# - Config-driven agents (agents.yaml)
-# - Scalable: add agents via YAML, no code changes
-# - Uses ~/.claude/.credentials.json for auth (Claude Max subscription)
-# - Runs as non-root user (required for Claude Code CLI)
+# Pure Python SDK implementation:
+# - agents.py: Python agent definitions (no .md files)
+# - sdk_runner.py: SDK execution with query() or ClaudeSDKClient
+# - hooks.py: Pre/Post tool hooks
+# - tools/: Custom Python tools with @tool decorator
+#
+# Usage:
+#   docker run -e CLAUDE_CODE_OAUTH_TOKEN=xxx -e AGENT_NAME=feed-publisher agent-runner
 
-FROM node:20-slim
+FROM python:3.12-slim
 
-# Install system dependencies including cron, ffmpeg, and fonts
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     git \
-    python3 \
-    python3-pip \
-    python3-venv \
-    procps \
-    cron \
-    ffmpeg \
-    fonts-dejavu-core \
-    fonts-liberation \
-    gosu \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user for Claude Code (required - CLI refuses to run with root+skip-permissions)
+# Create non-root user
 RUN groupadd -r agent && useradd -r -g agent -d /home/agent -s /bin/bash -m agent
 
-# Install Claude CLI globally
-RUN npm install -g @anthropic-ai/claude-code
-
-# Install claude-code-logger for real-time visibility
-RUN npm install -g claude-code-logger
-
-# Create directories with proper ownership
+# Create directories
 WORKDIR /app
-RUN mkdir -p /app/logs /app/agents /app/mcp-servers /app/data/visual-content /home/agent/.claude \
+RUN mkdir -p /app/logs /app/tools /app/mcp-servers /home/agent/.claude \
     && chown -R agent:agent /app /home/agent
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt /app/requirements.txt
-RUN pip3 install --break-system-packages -r /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Copy MCP servers
+# Copy application files (pure Python SDK)
+COPY --chown=agent:agent agents.py /app/agents.py
+COPY --chown=agent:agent sdk_runner.py /app/sdk_runner.py
+COPY --chown=agent:agent hooks.py /app/hooks.py
+COPY --chown=agent:agent entrypoint.sh /app/entrypoint.sh
+COPY --chown=agent:agent tools/ /app/tools/
+
+# Copy MCP servers if they exist
 COPY --chown=agent:agent mcp-servers/ /app/mcp-servers/
 
-# Copy agents from repo (built into container)
-COPY --chown=agent:agent agents/ /app/agents/
+RUN chmod +x /app/entrypoint.sh /app/sdk_runner.py
 
-# Copy MCP config for Claude
-COPY --chown=agent:agent .mcp.json /app/.mcp.json
-
-# Copy scripts and API
-COPY entrypoint.sh /entrypoint.sh
-COPY --chown=agent:agent schedule.sh /app/schedule.sh
-COPY --chown=agent:agent run-agent.sh /app/run-agent.sh
-COPY --chown=agent:agent refresh-token.sh /app/refresh-token.sh
-RUN chmod +x /entrypoint.sh /app/schedule.sh /app/run-agent.sh /app/refresh-token.sh
-
-# Copy SDK-based API (v2 architecture)
-COPY --chown=agent:agent config/ /app/config/
-COPY --chown=agent:agent agent_registry.py /app/agent_registry.py
-COPY --chown=agent:agent sdk_executor.py /app/sdk_executor.py
-COPY --chown=agent:agent api.py /app/api.py
+# Switch to non-root user
+USER agent
 
 # Environment variables
 ENV AGENT_NAME=feed-publisher
-ENV AGENT_TASK="Run the agent task"
-ENV LOG_LEVEL=verbose
-ENV AGENT_SCHEDULE=""
+ENV AGENT_TASK="Run the default agent task"
+ENV LOG_LEVEL=INFO
+ENV KEEP_ALIVE=false
 ENV HOME=/home/agent
-ENV USER=agent
 
-# Expose ports: 8000 for logger, 8080 for API
-EXPOSE 8000 8080
+WORKDIR /app
 
-# Health check via API
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+# Healthcheck
+HEALTHCHECK --interval=60s --timeout=10s --start-period=10s --retries=3 \
+    CMD python3 -c "import claude_agent_sdk; print('OK')" || exit 1
 
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["/app/entrypoint.sh"]
