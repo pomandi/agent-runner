@@ -41,7 +41,9 @@ COPY --chown=agent:agent tools/ /app/tools/
 # Copy MCP servers if they exist
 COPY --chown=agent:agent mcp-servers/ /app/mcp-servers/
 
-RUN chmod +x /app/entrypoint.sh /app/sdk_runner.py
+# Make scripts executable
+RUN chmod +x /app/entrypoint.sh /app/sdk_runner.py && \
+    find /app/mcp-servers -name "server.py" -exec chmod +x {} \;
 
 # Switch to non-root user
 USER agent

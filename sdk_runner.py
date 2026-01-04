@@ -30,13 +30,13 @@ from claude_agent_sdk import (
 # Import agent definitions
 from agents import get_agent, list_agents, AGENTS
 
-# Import monitoring client (optional)
+# Import monitoring client (optional - Langfuse integration)
 try:
-    from monitoring import DashboardClient
+    from monitoring import LangfuseClient
     MONITORING_AVAILABLE = True
 except ImportError:
     MONITORING_AVAILABLE = False
-    DashboardClient = None
+    LangfuseClient = None
 
 # Setup logging with valid level mapping
 _log_level_map = {
@@ -154,10 +154,10 @@ async def run_agent(
     logger.info(f"Description: {agent.description}")
 
     # Initialize monitoring client (if available and configured)
-    monitor: Optional['DashboardClient'] = None
-    if MONITORING_AVAILABLE and os.getenv('DASHBOARD_URL'):
-        monitor = DashboardClient()
-        await monitor.start_execution(agent.name, task)
+    monitor: Optional['LangfuseClient'] = None
+    if MONITORING_AVAILABLE and os.getenv('LANGFUSE_PUBLIC_KEY'):
+        monitor = LangfuseClient()
+        await monitor.start_trace(agent.name, task)
 
     # Build options
     options_kwargs = {
@@ -231,7 +231,7 @@ async def run_agent(
     # Complete monitoring
     if monitor:
         status = 'completed' if results.get('success') else 'failed'
-        await monitor.complete_execution(
+        await monitor.complete_trace(
             status=status,
             cost_usd=results.get('cost_usd'),
             error_message=results.get('error')
