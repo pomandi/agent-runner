@@ -15,6 +15,7 @@ import os
 import sys
 import logging
 from datetime import datetime
+from pathlib import Path
 
 import anyio
 from dotenv import load_dotenv
@@ -57,6 +58,48 @@ def load_custom_tools():
         return ALL_TOOLS
     except ImportError:
         return []
+
+
+def load_mcp_servers(agent_tools: list) -> dict:
+    """
+    Load MCP servers based on agent tool requirements.
+
+    Args:
+        agent_tools: List of tool patterns (e.g., ["mcp__feed-publisher-mcp__*"])
+
+    Returns:
+        Dict of MCP server configurations for ClaudeAgentOptions
+    """
+    mcp_servers = {}
+    mcp_dir = Path(__file__).parent / "mcp-servers"
+
+    if not mcp_dir.exists():
+        logger.warning(f"MCP servers directory not found: {mcp_dir}")
+        return mcp_servers
+
+    # Extract unique MCP server names from tool patterns
+    server_names = set()
+    for tool_pattern in agent_tools:
+        if tool_pattern.startswith("mcp__") and "__" in tool_pattern:
+            # Extract server name from "mcp__server-name__tool" or "mcp__server-name__*"
+            parts = tool_pattern.split("__")
+            if len(parts) >= 2:
+                server_names.add(parts[1])
+
+    # Load each required server
+    for server_name in server_names:
+        server_path = mcp_dir / server_name / "server.py"
+        if server_path.exists():
+            mcp_servers[server_name] = {
+                "command": "python3",
+                "args": [str(server_path)],
+                "env": dict(os.environ)  # Pass all env vars (tokens, etc.)
+            }
+            logger.info(f"Loaded MCP server: {server_name}")
+        else:
+            logger.warning(f"MCP server not found: {server_name} at {server_path}")
+
+    return mcp_servers
 
 
 def load_hooks(hook_type: str = 'safety'):
@@ -108,6 +151,11 @@ async def run_agent(
         'max_turns': agent.max_turns,
     }
 
+    # Load MCP servers based on agent tool requirements
+    mcp_servers = load_mcp_servers(agent.tools)
+    if mcp_servers:
+        options_kwargs['mcp_servers'] = mcp_servers
+
     # Add custom tools if enabled
     if use_tools:
         custom_tools = load_custom_tools()
@@ -118,7 +166,10 @@ async def run_agent(
                 version="1.0.0",
                 tools=custom_tools
             )
-            options_kwargs['mcp_servers'] = {"custom": tools_server}
+            # Merge with existing mcp_servers
+            if 'mcp_servers' not in options_kwargs:
+                options_kwargs['mcp_servers'] = {}
+            options_kwargs['mcp_servers']['custom'] = tools_server
 
     # Add hooks if enabled
     if use_hooks:
