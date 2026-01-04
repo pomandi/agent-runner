@@ -4,6 +4,8 @@ Agent Runner HTTP API
 Fast minimal API wrapper around SDK runner.
 """
 import os
+import json
+import re
 import logging
 from datetime import datetime
 from typing import Optional, List
@@ -11,7 +13,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
-import anyio
 
 from sdk_runner import run_agent
 
@@ -126,15 +127,12 @@ Return ONLY the JSON object, no markdown, no explanation.
 """
 
         # Run invoice-matcher agent
-        async def _run():
-            return await run_agent(
-                agent_name="invoice-matcher",
-                task=task_prompt,
-                use_tools=False,
-                use_hooks=False
-            )
-
-        result = await anyio.run(_run)
+        result = await run_agent(
+            agent_name="invoice-matcher",
+            task=task_prompt,
+            use_tools=False,
+            use_hooks=False
+        )
 
         if not result.get('success'):
             raise HTTPException(
@@ -146,9 +144,6 @@ Return ONLY the JSON object, no markdown, no explanation.
         final_result = result.get('final_result', '')
 
         # Try to extract JSON from response
-        import json
-        import re
-
         # Remove markdown code blocks if present
         json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', final_result, re.DOTALL)
         if json_match:
