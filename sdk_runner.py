@@ -102,9 +102,10 @@ def load_mcp_servers(agent_tools: list) -> dict:
             mcp_servers[server_name] = {
                 "command": "python3",
                 "args": [str(server_path)],
-                "env": dict(os.environ)  # Pass all env vars (tokens, etc.)
+                "env": dict(os.environ),  # Pass all env vars (tokens, etc.)
+                "stderr": "inherit"  # Show MCP server errors
             }
-            logger.info(f"Loaded MCP server: {server_name}")
+            logger.info(f"Loaded MCP server: {server_name} at {server_path}")
         else:
             logger.warning(f"MCP server not found: {server_name} at {server_path}")
 
@@ -223,8 +224,11 @@ async def run_agent(
         results['success'] = True
 
     except Exception as e:
-        logger.error(f"Agent failed: {e}")
+        logger.error(f"Agent failed: {e}", exc_info=True)
         results['error'] = str(e)
+        # Add more error details
+        if hasattr(e, '__cause__'):
+            results['error'] += f" | Cause: {e.__cause__}"
 
     results['duration_seconds'] = (datetime.now() - start_time).total_seconds()
 
