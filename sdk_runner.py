@@ -162,7 +162,7 @@ async def run_agent(
     # Build options
     options_kwargs = {
         'system_prompt': agent.system_prompt,
-        'permission_mode': 'acceptEdits',
+        'permission_mode': 'acceptAll',  # Accept all tool calls automatically
         'max_turns': agent.max_turns,
         'stderr': lambda msg: None,  # Suppress "Using bundled Claude Code CLI" logs
     }
