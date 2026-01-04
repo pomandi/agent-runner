@@ -28,9 +28,20 @@ from claude_agent_sdk import (
 # Import agent definitions
 from agents import get_agent, list_agents, AGENTS
 
-# Setup logging
+# Setup logging with valid level mapping
+_log_level_map = {
+    'DEBUG': logging.DEBUG,
+    'INFO': logging.INFO,
+    'WARNING': logging.WARNING,
+    'ERROR': logging.ERROR,
+    'CRITICAL': logging.CRITICAL,
+    'VERBOSE': logging.DEBUG,  # Map verbose to DEBUG
+}
+_raw_level = os.getenv('LOG_LEVEL', 'INFO').upper()
+_log_level = _log_level_map.get(_raw_level, logging.INFO)
+
 logging.basicConfig(
-    level=os.getenv('LOG_LEVEL', 'INFO'),
+    level=_log_level,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('sdk_runner')
