@@ -39,27 +39,48 @@ AGENT_TASK="${AGENT_TASK:-Run the default agent task}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
 KEEP_ALIVE="${KEEP_ALIVE:-false}"
 
-echo "Agent: $AGENT_NAME"
-echo "Task: $AGENT_TASK"
-echo "Log Level: $LOG_LEVEL"
-echo ""
-echo "----------------------------------------------"
-echo ""
+# Check run mode
+RUN_MODE="${RUN_MODE:-sdk}"
+API_PORT="${API_PORT:-8000}"
 
-# Run the agent
-python3 sdk_runner.py "$AGENT_NAME" "$AGENT_TASK"
-EXIT_CODE=$?
-
-echo ""
-echo "----------------------------------------------"
-echo "Agent finished with exit code: $EXIT_CODE"
-
-# Keep alive if requested
-if [ "$KEEP_ALIVE" = "true" ]; then
+if [ "$RUN_MODE" = "api" ]; then
+    echo "Mode: API Server"
+    echo "Port: $API_PORT"
     echo ""
-    echo "KEEP_ALIVE=true, container will stay running..."
-    echo "Use 'docker exec' to run more agents"
-    tail -f /dev/null
-fi
+    echo "----------------------------------------------"
+    echo ""
 
-exit $EXIT_CODE
+    # Start FastAPI server
+    exec python3 api.py
+
+elif [ "$RUN_MODE" = "sdk" ]; then
+    echo "Mode: SDK Runner"
+    echo "Agent: $AGENT_NAME"
+    echo "Task: $AGENT_TASK"
+    echo "Log Level: $LOG_LEVEL"
+    echo ""
+    echo "----------------------------------------------"
+    echo ""
+
+    # Run the agent
+    python3 sdk_runner.py "$AGENT_NAME" "$AGENT_TASK"
+    EXIT_CODE=$?
+
+    echo ""
+    echo "----------------------------------------------"
+    echo "Agent finished with exit code: $EXIT_CODE"
+
+    # Keep alive if requested
+    if [ "$KEEP_ALIVE" = "true" ]; then
+        echo ""
+        echo "KEEP_ALIVE=true, container will stay running..."
+        echo "Use 'docker exec' to run more agents"
+        tail -f /dev/null
+    fi
+
+    exit $EXIT_CODE
+else
+    echo "ERROR: Invalid RUN_MODE: $RUN_MODE"
+    echo "Valid modes: api, sdk"
+    exit 1
+fi

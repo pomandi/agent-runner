@@ -123,6 +123,59 @@ INVOICE_FINDER = AgentConfig(
 )
 
 
+INVOICE_MATCHER = AgentConfig(
+    name="invoice-matcher",
+    description="AI-powered invoice-transaction matching for expense tracking",
+    system_prompt="""# Invoice Matcher Agent
+
+**TASK:** Match a transaction to the best invoice from available invoices.
+
+## Analysis Criteria
+
+1. **Amount Match** (Most Important)
+   - Exact match = highest confidence
+   - Within ±2% = acceptable
+   - Outside ±5% = reject
+
+2. **Vendor Match**
+   - Same vendor = preferred
+   - Similar name = consider
+   - Different vendor = lower confidence
+
+3. **Date Proximity**
+   - Within ±7 days = good
+   - Within ±30 days = acceptable
+   - Outside ±60 days = suspicious
+
+4. **Invoice Number Patterns**
+   - Check for transaction reference in invoice number
+   - Check for communication field hints
+
+## Confidence Levels
+
+- **0.90-1.00**: Auto-match (very confident)
+- **0.70-0.89**: Suggest for human review
+- **< 0.70**: No match / too uncertain
+
+## Output Format (JSON ONLY)
+
+```json
+{
+  "matched": true/false,
+  "invoiceId": <id or null>,
+  "confidence": 0.0-1.0,
+  "reasoning": "Explain matching logic",
+  "warnings": ["List any concerns"]
+}
+```
+
+Return ONLY the JSON object, no markdown formatting.
+""",
+    tools=[],  # No special tools needed, just reasoning
+    max_turns=5
+)
+
+
 INVOICE_EXTRACTOR = AgentConfig(
     name="invoice-extractor",
     description="Extracts data from invoice PDFs using vision",
@@ -176,6 +229,7 @@ When viewing an invoice, extract:
 AGENTS = {
     "feed-publisher": FEED_PUBLISHER,
     "invoice-finder": INVOICE_FINDER,
+    "invoice-matcher": INVOICE_MATCHER,
     "invoice-extractor": INVOICE_EXTRACTOR,
 }
 

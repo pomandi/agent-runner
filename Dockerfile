@@ -33,6 +33,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 # Copy application files (pure Python SDK)
 COPY --chown=agent:agent agents.py /app/agents.py
 COPY --chown=agent:agent sdk_runner.py /app/sdk_runner.py
+COPY --chown=agent:agent api.py /app/api.py
 COPY --chown=agent:agent hooks.py /app/hooks.py
 COPY --chown=agent:agent entrypoint.sh /app/entrypoint.sh
 COPY --chown=agent:agent tools/ /app/tools/
@@ -46,6 +47,8 @@ RUN chmod +x /app/entrypoint.sh /app/sdk_runner.py
 USER agent
 
 # Environment variables
+ENV RUN_MODE=api
+ENV API_PORT=8000
 ENV AGENT_NAME=feed-publisher
 ENV AGENT_TASK="Run the default agent task"
 ENV LOG_LEVEL=INFO
@@ -54,8 +57,11 @@ ENV HOME=/home/agent
 
 WORKDIR /app
 
-# Healthcheck
+# Healthcheck (checks API server or SDK)
 HEALTHCHECK --interval=60s --timeout=10s --start-period=10s --retries=3 \
-    CMD python3 -c "import claude_agent_sdk; print('OK')" || exit 1
+    CMD curl -f http://localhost:8000/health || python3 -c "import claude_agent_sdk; print('OK')" || exit 1
+
+# Expose API port
+EXPOSE 8000
 
 ENTRYPOINT ["/app/entrypoint.sh"]
