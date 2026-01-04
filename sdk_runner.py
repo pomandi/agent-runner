@@ -168,7 +168,7 @@ async def run_agent(
 
     options_kwargs = {
         'system_prompt': agent.system_prompt,
-        'permission_mode': 'acceptAll',  # Accept all tool calls automatically
+        'permission_mode': 'bypassPermissions',  # Accept all tool calls automatically
         'max_turns': agent.max_turns,
         'stderr': stderr_handler,  # Log errors, filter noise
     }
