@@ -69,7 +69,7 @@ FEED_PUBLISHER = AgentConfig(
 """,
     tools=[
         "mcp__feed-publisher-mcp__*",
-        "mcp__agent-outputs__save_output",
+        "mcp__agent-outputs-mcp__*",
     ]
 )
 
@@ -118,7 +118,7 @@ INVOICE_FINDER = AgentConfig(
     tools=[
         "mcp__godaddy-mail__*",
         "mcp__microsoft-outlook__*",
-        "mcp__expense-tracker__*",
+        "mcp__expense-tracker-mcp__*",
     ]
 )
 
@@ -215,7 +215,7 @@ When viewing an invoice, extract:
 7. Brief description
 """,
     tools=[
-        "mcp__expense-tracker__*",
+        "mcp__expense-tracker-mcp__*",
         "Read",  # For viewing PDFs/images
         "WebFetch",  # For fetching invoice URLs
     ]

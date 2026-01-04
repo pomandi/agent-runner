@@ -168,9 +168,13 @@ async def run_agent(
     }
 
     # Load MCP servers based on agent tool requirements
+    logger.info(f"Agent tools: {agent.tools}")
     mcp_servers = load_mcp_servers(agent.tools)
     if mcp_servers:
+        logger.info(f"Loaded {len(mcp_servers)} MCP servers: {list(mcp_servers.keys())}")
         options_kwargs['mcp_servers'] = mcp_servers
+    else:
+        logger.warning("No MCP servers loaded for this agent")
 
     # Add custom tools if enabled
     if use_tools:
