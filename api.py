@@ -98,7 +98,7 @@ Available Invoices ({len(request.invoices)}):
 """
 
         for inv in request.invoices:
-            task_prompt += f"\n- Invoice #{inv.get('invoiceNumber')} | €{inv.get('totalAmount')} | {inv.get('invoiceDate')} | {inv.get('vendorName')} | File: {inv.get('fileName')}"
+            task_prompt += f"\n- ID: {inv.get('id')} | Invoice #{inv.get('invoiceNumber')} | €{inv.get('totalAmount')} | {inv.get('invoiceDate')} | {inv.get('vendorName')} | File: {inv.get('fileName')}"
 
         task_prompt += """
 
@@ -109,7 +109,7 @@ TASK:
 
 {
   "matched": true/false,
-  "invoiceId": <invoice_id or null>,
+  "invoiceId": <numeric ID from the invoice list, or null if no match>,
   "confidence": 0.0-1.0,
   "reasoning": "<explain your matching logic>",
   "warnings": ["<any concerns>"]
