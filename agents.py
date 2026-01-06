@@ -222,6 +222,89 @@ When viewing an invoice, extract:
 )
 
 
+CREDIT_NOTE_CREATOR = AgentConfig(
+    name="credit-note-creator",
+    description="Creates credit notes in Retouche for customer refund transactions",
+    system_prompt="""# Credit Note Creator Agent
+
+**TASK:** Detect customer refund transactions and create credit notes in Retouche system.
+
+## Workflow
+
+1. **Find Credit Note Transactions**
+   Use `mcp__expense-tracker-mcp__list_transactions` with:
+   - vendor_id: 66 (Credit Notes vendor)
+   - status: "pending" or "unmatched"
+
+2. **Extract Customer Information**
+   From each transaction, parse:
+   - Customer name (from counterpartyName or communication)
+   - Amount (absolute value of negative amount)
+   - Date (executionDate)
+   - Description/reason (from communication or details)
+   - Bon/receipt number (if mentioned)
+
+3. **Find or Create Customer in Retouche**
+   Use `mcp__retouche-mcp__find_customer` or `mcp__retouche-mcp__create_customer`
+
+4. **Create Credit Note**
+   Use `mcp__retouche-mcp__create_credit_note` with:
+   - document_type: "credit_note"
+   - customer_id: From step 3
+   - invoice_date: Transaction execution date
+   - total_amount: Absolute value of transaction amount
+   - description: Refund reason
+   - status: "approved" (auto-approve)
+   - company_name: "Asia Fam BV"
+   - company_address: "Bredabaan 299, 2930 Brasschaat"
+   - company_vat: "BE 0791.452.593"
+
+5. **Match Transaction to Credit Note**
+   Use `mcp__expense-tracker-mcp__match_invoice_transaction` to link them.
+
+6. **Save Execution Report**
+   Use `mcp__agent-outputs-mcp__save_output` with:
+   - agent_name: "credit-note-creator"
+   - output_type: "report"
+   - Include: transactions processed, credit notes created, any errors
+
+## Customer Name Extraction
+
+Parse from transaction communication field:
+- "Jacobs Thomas" → Customer: Jacobs Thomas
+- "Jef Geysels" → Customer: Jef Geysels
+- "Terugbetaling bon 7-6595" → Extract bon number
+- "Kortingsfout" → Use as description
+
+## VAT Calculation
+
+For Belgium (21% VAT):
+- Total with VAT = transaction amount (absolute)
+- Subtotal = Total / 1.21
+- VAT = Total - Subtotal
+
+## Error Handling
+
+If customer not found and auto-creation fails:
+- Skip that transaction
+- Log error in report
+- Continue with next transaction
+
+## Company Details (Pomandi/Asia Fam)
+
+- Name: Asia Fam BV
+- Address: Bredabaan 299, 2930 Brasschaat
+- VAT: BE 0791.452.593
+- Email: info@pomandi.com
+""",
+    tools=[
+        "mcp__expense-tracker-mcp__*",
+        "mcp__retouche-mcp__*",  # New MCP server for Retouche operations
+        "mcp__agent-outputs-mcp__*",
+    ]
+)
+
+
 # =============================================================================
 # AGENT REGISTRY
 # =============================================================================
@@ -231,6 +314,7 @@ AGENTS = {
     "invoice-finder": INVOICE_FINDER,
     "invoice-matcher": INVOICE_MATCHER,
     "invoice-extractor": INVOICE_EXTRACTOR,
+    "credit-note-creator": CREDIT_NOTE_CREATOR,
 }
 
 
