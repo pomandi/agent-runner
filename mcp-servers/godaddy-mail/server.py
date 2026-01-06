@@ -2,14 +2,17 @@
 """
 GoDaddy Mail MCP Server
 ========================
-MCP Server for GoDaddy email access via IMAP.
+MCP Server for GoDaddy email access via IMAP and SMTP.
 
 Provides tools for:
-- Reading emails from inbox
-- Searching emails
-- Getting email details
-- Listing folders
-- Reading/downloading attachments
+- Reading emails from inbox (IMAP)
+- Searching emails (IMAP)
+- Getting email details (IMAP)
+- Listing folders (IMAP)
+- Reading/downloading attachments (IMAP)
+- Sending emails (SMTP)
+- Bulk email sending (SMTP)
+- Template-based emails (SMTP)
 
 Environment Variables Required (from .env):
 - GODADDY_EMAIL: Email address (e.g., info@pomandi.com)
@@ -19,7 +22,11 @@ IMAP Settings:
 - Server: imap.secureserver.net
 - Port: 993 (SSL)
 
-Version: 1.0
+SMTP Settings:
+- Server: smtp.secureserver.net
+- Port: 587 (TLS)
+
+Version: 2.0
 """
 
 import asyncio
@@ -29,12 +36,17 @@ import sys
 import email
 import base64
 import imaplib
+import smtplib
 import re
 from typing import Any, Optional, List, Dict
 from datetime import datetime, timedelta
 from pathlib import Path
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 
 # MCP SDK
 from mcp.server import Server
@@ -43,11 +55,16 @@ from mcp.types import Tool, TextContent
 
 # Server info
 SERVER_NAME = "godaddy-mail"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "2.0.0"
 
 # IMAP Settings
 IMAP_SERVER = "imap.secureserver.net"
 IMAP_PORT = 993
+
+# SMTP Settings
+SMTP_SERVER = "smtp.secureserver.net"
+SMTP_PORT = 587  # TLS
+SMTP_PORT_SSL = 465  # SSL (alternative)
 
 # Initialize MCP server
 server = Server(SERVER_NAME)
@@ -134,6 +151,23 @@ def connect_imap():
     mail.login(config["email"], config["password"])
 
     return mail
+
+
+def connect_smtp():
+    """Connect to SMTP server"""
+    config = get_config()
+
+    if not config["password"]:
+        raise Exception("GODADDY_PASSWORD not set in environment")
+
+    # Use TLS (port 587) - recommended
+    smtp = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+    smtp.ehlo()
+    smtp.starttls()
+    smtp.ehlo()
+    smtp.login(config["email"], config["password"])
+
+    return smtp
 
 
 def parse_email_message(raw_email: bytes, uid: str) -> dict:
@@ -374,6 +408,105 @@ TOOLS = [
                     "description": "Folder name (default: INBOX)"
                 }
             }
+        }
+    ),
+    Tool(
+        name="send_email",
+        description="Send an email via SMTP. Supports plain text and HTML content.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "string",
+                    "description": "Recipient email address (or comma-separated list)"
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Email subject"
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Email body (plain text)"
+                },
+                "html_body": {
+                    "type": "string",
+                    "description": "Email body (HTML format, optional)"
+                },
+                "cc": {
+                    "type": "string",
+                    "description": "CC recipients (comma-separated, optional)"
+                },
+                "bcc": {
+                    "type": "string",
+                    "description": "BCC recipients (comma-separated, optional)"
+                },
+                "reply_to": {
+                    "type": "string",
+                    "description": "Reply-to address (optional)"
+                }
+            },
+            "required": ["to", "subject", "body"]
+        }
+    ),
+    Tool(
+        name="send_bulk_emails",
+        description="Send emails to multiple recipients. Each email is sent individually (not as group mail).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "recipients": {
+                    "type": "array",
+                    "description": "List of recipient email addresses",
+                    "items": {"type": "string"}
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Email subject (same for all)"
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Email body (plain text, same for all)"
+                },
+                "html_body": {
+                    "type": "string",
+                    "description": "Email body (HTML, optional)"
+                },
+                "personalize": {
+                    "type": "boolean",
+                    "description": "If true, replaces {email} placeholder with recipient's email"
+                }
+            },
+            "required": ["recipients", "subject", "body"]
+        }
+    ),
+    Tool(
+        name="send_template_email",
+        description="Send email using template with variable substitution. Use {{variable}} in subject/body.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "string",
+                    "description": "Recipient email address"
+                },
+                "subject_template": {
+                    "type": "string",
+                    "description": "Subject template with {{variables}}"
+                },
+                "body_template": {
+                    "type": "string",
+                    "description": "Body template with {{variables}}"
+                },
+                "variables": {
+                    "type": "object",
+                    "description": "Key-value pairs for template variables"
+                },
+                "html_body_template": {
+                    "type": "string",
+                    "description": "HTML body template (optional)"
+                }
+            },
+            "required": ["to", "subject_template", "body_template", "variables"]
         }
     )
 ]
@@ -710,8 +843,166 @@ async def handle_get_unread_count(folder: str = "INBOX") -> dict:
         mail.logout()
 
 
+# ============================================================================
+# SMTP Tool Handlers (NEW)
+# ============================================================================
+
+async def handle_send_email(
+    to: str,
+    subject: str,
+    body: str,
+    html_body: str = None,
+    cc: str = None,
+    bcc: str = None,
+    reply_to: str = None
+) -> dict:
+    """Send a single email"""
+    config = get_config()
+    smtp = connect_smtp()
+
+    try:
+        # Create message
+        if html_body:
+            msg = MIMEMultipart("alternative")
+            msg.attach(MIMEText(body, "plain", "utf-8"))
+            msg.attach(MIMEText(html_body, "html", "utf-8"))
+        else:
+            msg = MIMEText(body, "plain", "utf-8")
+
+        msg["From"] = config["email"]
+        msg["To"] = to
+        msg["Subject"] = subject
+
+        if cc:
+            msg["Cc"] = cc
+        if bcc:
+            msg["Bcc"] = bcc
+        if reply_to:
+            msg["Reply-To"] = reply_to
+
+        # Prepare recipient list
+        recipients = [addr.strip() for addr in to.split(",")]
+        if cc:
+            recipients.extend([addr.strip() for addr in cc.split(",")])
+        if bcc:
+            recipients.extend([addr.strip() for addr in bcc.split(",")])
+
+        # Send
+        smtp.sendmail(config["email"], recipients, msg.as_string())
+
+        return {
+            "success": True,
+            "from": config["email"],
+            "to": to,
+            "cc": cc,
+            "bcc": bcc,
+            "subject": subject,
+            "sent_at": datetime.now().isoformat()
+        }
+    finally:
+        smtp.quit()
+
+
+async def handle_send_bulk_emails(
+    recipients: list,
+    subject: str,
+    body: str,
+    html_body: str = None,
+    personalize: bool = False
+) -> dict:
+    """Send emails to multiple recipients individually"""
+    config = get_config()
+    smtp = connect_smtp()
+
+    sent = []
+    failed = []
+
+    try:
+        for recipient in recipients:
+            try:
+                # Personalize if requested
+                current_body = body
+                current_html = html_body
+                current_subject = subject
+
+                if personalize:
+                    current_body = body.replace("{email}", recipient)
+                    current_subject = subject.replace("{email}", recipient)
+                    if html_body:
+                        current_html = html_body.replace("{email}", recipient)
+
+                # Create message
+                if current_html:
+                    msg = MIMEMultipart("alternative")
+                    msg.attach(MIMEText(current_body, "plain", "utf-8"))
+                    msg.attach(MIMEText(current_html, "html", "utf-8"))
+                else:
+                    msg = MIMEText(current_body, "plain", "utf-8")
+
+                msg["From"] = config["email"]
+                msg["To"] = recipient
+                msg["Subject"] = current_subject
+
+                # Send
+                smtp.sendmail(config["email"], [recipient], msg.as_string())
+                sent.append(recipient)
+
+            except Exception as e:
+                failed.append({
+                    "email": recipient,
+                    "error": str(e)
+                })
+
+        return {
+            "success": len(failed) == 0,
+            "total_recipients": len(recipients),
+            "sent_count": len(sent),
+            "failed_count": len(failed),
+            "sent_to": sent,
+            "failed": failed,
+            "completed_at": datetime.now().isoformat()
+        }
+    finally:
+        smtp.quit()
+
+
+async def handle_send_template_email(
+    to: str,
+    subject_template: str,
+    body_template: str,
+    variables: dict,
+    html_body_template: str = None
+) -> dict:
+    """Send email using templates with variable substitution"""
+    config = get_config()
+
+    # Replace variables in templates
+    subject = subject_template
+    body = body_template
+    html_body = html_body_template
+
+    for key, value in variables.items():
+        placeholder = "{{" + key + "}}"
+        subject = subject.replace(placeholder, str(value))
+        body = body.replace(placeholder, str(value))
+        if html_body:
+            html_body = html_body.replace(placeholder, str(value))
+
+    # Use regular send_email handler
+    result = await handle_send_email(
+        to=to,
+        subject=subject,
+        body=body,
+        html_body=html_body
+    )
+
+    result["template_variables"] = variables
+    return result
+
+
 # Tool handler mapping
 TOOL_HANDLERS = {
+    # IMAP handlers
     "get_inbox": handle_get_inbox,
     "search_emails": handle_search_emails,
     "get_email": handle_get_email,
@@ -720,7 +1011,11 @@ TOOL_HANDLERS = {
     "get_attachments": handle_get_attachments,
     "download_attachment": handle_download_attachment,
     "get_recent_emails": handle_get_recent_emails,
-    "get_unread_count": handle_get_unread_count
+    "get_unread_count": handle_get_unread_count,
+    # SMTP handlers (NEW)
+    "send_email": handle_send_email,
+    "send_bulk_emails": handle_send_bulk_emails,
+    "send_template_email": handle_send_template_email
 }
 
 

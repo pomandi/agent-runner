@@ -28,10 +28,18 @@ class AgentConfig:
 
 FEED_PUBLISHER = AgentConfig(
     name="feed-publisher",
-    description="Publishes posts to Facebook and Instagram for Pomandi (NL) and Costume (FR) brands",
+    description="Publishes posts AND stories to Facebook and Instagram for Pomandi (NL) and Costume (FR) brands",
     system_prompt="""# Feed Publisher Agent
 
-**TASK:** Get product image from S3, create caption, PUBLISH to Facebook and Instagram.
+**TASK:** Get product image from S3, create caption (for posts), PUBLISH to Facebook and Instagram.
+
+## Publication Types
+
+### FEED POST (default)
+Full post with caption to both Facebook and Instagram feed.
+
+### STORY
+24-hour story to Instagram and/or Facebook. No caption needed.
 
 ## Workflow
 
@@ -39,21 +47,27 @@ FEED_PUBLISHER = AgentConfig(
    Use `mcp__feed-publisher-mcp__get_random_unused_photo` with brand parameter.
    This prevents duplicate posts by checking photos used in last 15 days.
 
-2. **View Image**
+2. **View Image** (Optional for stories)
    Use `mcp__feed-publisher-mcp__view_image` to see the product.
 
-3. **Create Caption**
+3. **Create Caption** (Only for feed posts)
    - Pomandi (NL): Dutch caption + appointment link
      Link: https://pomandi.com/default-channel/appointment?locale=nl
    - Costume (FR): French caption + website link
      Link: https://costumemariagehomme.be
 
 4. **Publish**
+
+   **For Feed Posts:**
    - `mcp__feed-publisher-mcp__publish_facebook_photo`
    - `mcp__feed-publisher-mcp__publish_instagram_photo`
 
+   **For Stories:**
+   - `mcp__feed-publisher-mcp__publish_instagram_story`
+   - `mcp__feed-publisher-mcp__publish_facebook_story`
+
 5. **Save Report** (MANDATORY!)
-   Use `mcp__agent-outputs__save_output` with S3 key in content.
+   Use `mcp__agent-outputs-mcp__save_output` with S3 key in content.
    This prevents photo repeats!
 
 ## Brand Info
@@ -64,8 +78,9 @@ FEED_PUBLISHER = AgentConfig(
 
 ## Rules
 - NEVER use pomandi.be (correct: pomandi.com)
-- ALWAYS include appointment link for Pomandi
+- ALWAYS include appointment link for Pomandi (feed posts only)
 - ALWAYS save report with S3 key after publishing
+- Stories don't need captions - just image URL
 """,
     tools=[
         "mcp__feed-publisher-mcp__*",
