@@ -45,13 +45,10 @@ services:
       - POSTGRES_USER=temporal
       - POSTGRES_PWD=${TEMPORAL_DB_PASSWORD:-temporal123}
       - POSTGRES_SEEDS=postgresql
-      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
       - ENABLE_ES=false
       - LOG_LEVEL=info
     ports:
       - "7233:7233"
-    volumes:
-      - ./temporal-config:/etc/temporal/config/dynamicconfig
     networks:
       - temporal-network
     healthcheck:
