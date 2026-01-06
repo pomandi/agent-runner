@@ -80,10 +80,7 @@ async def setup_schedules():
                     run_timeout=timedelta(minutes=30),
                 ),
                 spec=ScheduleSpec(
-                    calendars=[
-                        ScheduleCalendarSpec(hour=[9], minute=[0]),   # 09:00 UTC
-                        ScheduleCalendarSpec(hour=[18], minute=[0]),  # 18:00 UTC
-                    ]
+                    cron_expressions=["0 9,18 * * *"],  # 09:00 and 18:00 UTC daily
                 ),
                 state=ScheduleState(
                     note="Daily social media posts for Pomandi brand",
@@ -122,10 +119,7 @@ async def setup_schedules():
                     run_timeout=timedelta(minutes=30),
                 ),
                 spec=ScheduleSpec(
-                    calendars=[
-                        ScheduleCalendarSpec(hour=[10], minute=[0]),  # 10:00 UTC
-                        ScheduleCalendarSpec(hour=[19], minute=[0]),  # 19:00 UTC
-                    ]
+                    cron_expressions=["0 10,19 * * *"],  # 10:00 and 19:00 UTC daily
                 ),
                 state=ScheduleState(
                     note="Daily social media posts for Costume brand",
