@@ -467,7 +467,8 @@ async def list_schedules(args: Dict[str, Any]) -> list[TextContent]:
     client = await get_temporal_client()
 
     schedules = []
-    async for schedule in client.list_schedules():
+    schedule_iterator = await client.list_schedules()
+    async for schedule in schedule_iterator:
         schedule_info = {
             "schedule_id": schedule.id,
             "paused": schedule.schedule.state.paused if schedule.schedule.state else None,
