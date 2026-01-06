@@ -17,6 +17,14 @@ import uvicorn
 from sdk_runner import run_agent
 from agents import list_agents, get_agent_info
 
+# Import monitoring client
+try:
+    from monitoring import LangfuseClient
+    MONITORING_AVAILABLE = True
+except ImportError:
+    MONITORING_AVAILABLE = False
+    LangfuseClient = None
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -114,6 +122,16 @@ async def run_agent_endpoint(request: RunAgentRequest):
     """
     start_time = datetime.now()
 
+    # Initialize monitoring client (if available and configured)
+    monitor = None
+    if MONITORING_AVAILABLE and os.getenv('LANGFUSE_PUBLIC_KEY'):
+        monitor = LangfuseClient()
+        await monitor.start_trace(request.agent, request.task, metadata={
+            "api_mode": True,
+            "endpoint": "/api/run"
+        })
+        logger.info(f"Langfuse monitoring started for {request.agent}")
+
     try:
         result = await run_agent(
             agent_name=request.agent,
@@ -124,6 +142,18 @@ async def run_agent_endpoint(request: RunAgentRequest):
 
         if not result.get('success'):
             logger.error(f"Agent {request.agent} failed: {result.get('error')}")
+
+        # Complete monitoring trace
+        if monitor:
+            status = 'completed' if result.get('success') else 'failed'
+            await monitor.complete_trace(
+                status=status,
+                cost_usd=result.get('cost_usd'),
+                output_summary=result.get('final_result'),
+                error_message=result.get('error')
+            )
+            await monitor.close()
+            logger.info(f"Langfuse trace completed: {status}")
 
         return RunAgentResponse(
             success=result.get('success', False),
@@ -138,6 +168,15 @@ async def run_agent_endpoint(request: RunAgentRequest):
 
     except Exception as e:
         logger.error(f"Run agent error: {e}")
+
+        # Complete monitoring trace with error
+        if monitor:
+            await monitor.complete_trace(
+                status='failed',
+                error_message=str(e)
+            )
+            await monitor.close()
+
         return RunAgentResponse(
             success=False,
             agent=request.agent,
@@ -155,6 +194,18 @@ async def invoice_match(request: InvoiceMatchRequest):
     Uses the invoice-matcher agent with Claude Agent SDK.
     """
     start_time = datetime.now()
+
+    # Initialize monitoring client (if available and configured)
+    monitor = None
+    if MONITORING_AVAILABLE and os.getenv('LANGFUSE_PUBLIC_KEY'):
+        monitor = LangfuseClient()
+        await monitor.start_trace("invoice-matcher", "AI Invoice Matching", metadata={
+            "api_mode": True,
+            "endpoint": "/api/invoice-match",
+            "transaction_id": request.transaction.get('id'),
+            "num_invoices": len(request.invoices)
+        })
+        logger.info("Langfuse monitoring started for invoice-matcher")
 
     try:
         # Build task prompt for the agent
@@ -235,6 +286,15 @@ Return ONLY the JSON object, no markdown, no explanation.
         duration = (datetime.now() - start_time).total_seconds()
         logger.info(f"Invoice matching completed in {duration:.2f}s: {match_result.get('matched')}")
 
+        # Complete monitoring trace
+        if monitor:
+            await monitor.complete_trace(
+                status='completed',
+                output_summary=f"Matched: {match_result.get('matched')}, Confidence: {match_result.get('confidence')}"
+            )
+            await monitor.close()
+            logger.info("Langfuse trace completed: completed")
+
         return InvoiceMatchResponse(
             success=True,
             matched=match_result.get('matched', False),
@@ -246,6 +306,15 @@ Return ONLY the JSON object, no markdown, no explanation.
 
     except json.JSONDecodeError as e:
         logger.error(f"JSON parse error: {e}")
+
+        # Complete monitoring trace with error
+        if monitor:
+            await monitor.complete_trace(
+                status='failed',
+                error_message=f"JSON parse error: {str(e)}"
+            )
+            await monitor.close()
+
         return InvoiceMatchResponse(
             success=False,
             matched=False,
@@ -257,6 +326,15 @@ Return ONLY the JSON object, no markdown, no explanation.
 
     except Exception as e:
         logger.error(f"Invoice matching error: {e}")
+
+        # Complete monitoring trace with error
+        if monitor:
+            await monitor.complete_trace(
+                status='failed',
+                error_message=str(e)
+            )
+            await monitor.close()
+
         return InvoiceMatchResponse(
             success=False,
             matched=False,
