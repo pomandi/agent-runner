@@ -6,53 +6,35 @@ Step-by-step guide to deploy the Temporal workflow system to Coolify.
 
 - ✅ Code pushed to GitHub: https://github.com/pomandi/agent-runner
 - ✅ Coolify instance running
-- ✅ PostgreSQL database available (for Temporal + agent_outputs)
+- ✅ External PostgreSQL database available (for agent_outputs)
 - ✅ All credentials ready (Meta tokens, AWS keys, etc.)
 
 ## Deployment Steps
 
-### Step 1: Deploy Temporal Infrastructure
+### Single Coolify Service (Recommended)
+
+This deploys everything in one go: Temporal infrastructure + Agent worker
 
 1. **Create New Service in Coolify**:
    - Type: **Docker Compose**
-   - Name: `temporal-infrastructure`
-   - Repository: `pomandi/agent-runner`
-   - Docker Compose File: `docker-compose.temporal.yml`
-
-2. **Environment Variables**:
-   ```bash
-   TEMPORAL_DB_PASSWORD=your_secure_password_here
-   ```
-
-3. **Deploy**:
-   - Click "Deploy"
-   - Wait for Temporal server + PostgreSQL + UI to start
-   - Verify: Temporal UI should be accessible on port 8088
-
-4. **Health Check**:
-   - Check logs: `docker compose -f docker-compose.temporal.yml logs temporal`
-   - Should see: "Started Temporal Server"
-
-### Step 2: Deploy Agent Worker
-
-1. **Create New Application in Coolify**:
-   - Type: **Dockerfile**
-   - Name: `agent-worker`
+   - Name: `temporal-agent-runner`
    - Repository: `pomandi/agent-runner`
    - Branch: `main`
+   - Docker Compose File: `docker-compose.yml` (default)
 
-2. **Build Configuration**:
-   - Dockerfile: `Dockerfile` (default)
-   - Build Args: None needed
+2. **Ports to Expose**:
+   - Port `7233`: Temporal gRPC API (internal, optional)
+   - Port `8088`: Temporal Web UI (expose publicly to access UI)
+   - Port `8080`: Agent API (optional, only if using API mode)
 
 3. **Environment Variables** (CRITICAL):
 
 ```bash
-# Run Mode
-RUN_MODE=worker
+# Temporal Infrastructure
+TEMPORAL_DB_PASSWORD=your_secure_temporal_password_here
 
-# Temporal Connection
-TEMPORAL_HOST=temporal:7233
+# Agent Worker Configuration
+RUN_MODE=worker
 TEMPORAL_NAMESPACE=default
 TEMPORAL_TASK_QUEUE=agent-tasks
 
@@ -91,30 +73,30 @@ META_IG_ACCOUNT_ID_COSTUME=17841441106266856
 LOG_LEVEL=INFO
 ```
 
-4. **Network Configuration**:
-   - Connect to same network as `temporal-infrastructure`
-   - Or use Coolify's service discovery with hostname `temporal`
-
-5. **Deploy**:
+4. **Deploy**:
    - Click "Deploy"
+   - Wait for all services to start (postgresql → temporal → temporal-ui → agent-worker)
    - Monitor logs: Should see "Worker initialized on task queue: agent-tasks"
 
-### Step 3: Setup Daily Schedules
+5. **Access Temporal UI**:
+   - URL: `http://your-coolify-domain:8088`
+   - Should see Temporal Web UI dashboard
+
+### Step 2: Setup Daily Schedules
 
 After worker is running, setup the schedules (ONE-TIME OPERATION):
 
 ```bash
 # SSH into your Coolify server or use Coolify console
 
-# Option 1: Using docker exec
-docker exec -it agent-worker python3 -m temporal_app.schedules.daily_tasks
+# Find the agent-worker container name (might be different in Coolify)
+docker ps | grep agent-worker
 
-# Option 2: Run separate container
-docker run --rm \
-  --network temporal_default \
-  -e RUN_MODE=scheduler \
-  -e TEMPORAL_HOST=temporal:7233 \
-  pomandi/agent-runner:latest
+# Execute schedule setup
+docker exec -it <container-name> python3 -m temporal_app.schedules.daily_tasks
+
+# Example:
+docker exec -it temporal-agent-runner-agent-worker-1 python3 -m temporal_app.schedules.daily_tasks
 ```
 
 Expected output:
@@ -128,10 +110,10 @@ Expected output:
 ✅ Schedule 'costume-daily-posts' created successfully
 ```
 
-### Step 4: Verify Deployment
+### Step 3: Verify Deployment
 
 1. **Check Temporal UI**:
-   - URL: `http://your-server:8088`
+   - URL: `http://your-coolify-domain:8088`
    - Go to Schedules tab
    - Should see: `pomandi-daily-posts` and `costume-daily-posts`
 
@@ -172,7 +154,7 @@ Expected output:
    "
    ```
 
-### Step 5: Monitor First Scheduled Run
+### Step 4: Monitor First Scheduled Run
 
 Wait for the first scheduled execution (09:00 UTC for Pomandi):
 
@@ -201,9 +183,13 @@ Wait for the first scheduled execution (09:00 UTC for Pomandi):
 **Symptom**: Worker starts but logs show connection errors
 
 **Fix**:
-1. Verify Temporal is running: `docker ps | grep temporal`
-2. Check network connectivity: `docker exec agent-worker ping temporal`
-3. Verify `TEMPORAL_HOST=temporal:7233` (not localhost)
+1. Verify all services are running: `docker ps`
+   - Should see: postgresql, temporal, temporal-ui, agent-worker
+2. Check temporal health: `docker logs temporal-agent-runner-temporal-1`
+3. Check worker can reach temporal:
+   ```bash
+   docker exec temporal-agent-runner-agent-worker-1 ping temporal
+   ```
 
 ### Missing Environment Variables
 
@@ -267,15 +253,23 @@ print('New token:', new_token)
 
 ## Scaling
 
-To scale horizontally:
+To scale the agent worker horizontally:
 
-1. **Deploy Multiple Workers**:
-   - Clone `agent-worker` service in Coolify
-   - Name: `agent-worker-2`, `agent-worker-3`, etc.
-   - Same environment variables
+1. **Scale Worker Container**:
+   ```bash
+   # In docker-compose.yml, add replicas to agent-worker:
+   agent-worker:
+     deploy:
+       replicas: 3  # Run 3 worker instances
+   ```
+
+2. **Or Deploy Separate Worker Service**:
+   - Create new Coolify service with only the worker
+   - Use Dockerfile with RUN_MODE=worker
+   - Connect to same Temporal infrastructure
    - All workers share same task queue
 
-2. **Temporal Auto-Load Balancing**:
+3. **Temporal Auto-Load Balancing**:
    - Workflows automatically distributed across workers
    - If one worker crashes, others pick up the work
 

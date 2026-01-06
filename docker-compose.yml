@@ -1,21 +1,84 @@
-# Docker Compose - Agent Runner Services
+# Docker Compose - Complete Temporal Workflow System
 #
-# This file defines the agent services that connect to Temporal infrastructure.
-# The Temporal infrastructure itself is in docker-compose.temporal.yml
+# ALL-IN-ONE deployment: Temporal infrastructure + Agent worker
+# Deploy as single Coolify Docker Compose service
 #
 # Usage:
-#   # Start Temporal infrastructure first:
-#   docker compose -f docker-compose.temporal.yml up -d
-#
-#   # Then start agent services:
 #   docker compose up -d
-#
-#   # View logs:
 #   docker compose logs -f agent-worker
 #
 version: '3.8'
 
 services:
+  # =============================================================================
+  # TEMPORAL INFRASTRUCTURE
+  # =============================================================================
+
+  postgresql:
+    container_name: temporal-postgresql
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: ${TEMPORAL_DB_PASSWORD:-temporal123}
+      POSTGRES_USER: temporal
+      POSTGRES_DB: temporal
+      POSTGRES_DB_VISIBILITY: temporal_visibility
+    volumes:
+      - temporal-postgres:/var/lib/postgresql/data
+    networks:
+      - temporal-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  temporal:
+    container_name: temporal
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    image: temporalio/auto-setup:1.25.1
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=${TEMPORAL_DB_PASSWORD:-temporal123}
+      - POSTGRES_SEEDS=postgresql
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+      - ENABLE_ES=false
+      - LOG_LEVEL=info
+    ports:
+      - "7233:7233"
+    volumes:
+      - ./temporal-config:/etc/temporal/config/dynamicconfig
+    networks:
+      - temporal-network
+    healthcheck:
+      test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  temporal-ui:
+    container_name: temporal-ui
+    depends_on:
+      temporal:
+        condition: service_healthy
+    image: temporalio/ui:2.35.0
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+    ports:
+      - "8088:8080"
+    networks:
+      - temporal-network
+    restart: unless-stopped
+
+  # =============================================================================
+  # AGENT WORKER
+  # =============================================================================
   # Temporal Worker - Executes workflows and activities
   agent-worker:
     build:
@@ -67,7 +130,6 @@ services:
 
     networks:
       - temporal-network
-      - agent-network
 
     depends_on:
       temporal:
@@ -121,7 +183,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
 
     networks:
-      - agent-network
+      - temporal-network
 
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
@@ -138,15 +200,11 @@ services:
       - api
 
 networks:
-  # Connect to Temporal infrastructure network
   temporal-network:
-    external: true
-    name: temporal_default
-
-  # Internal agent network
-  agent-network:
     driver: bridge
 
 volumes:
+  temporal-postgres:
+    driver: local
   logs:
     driver: local
