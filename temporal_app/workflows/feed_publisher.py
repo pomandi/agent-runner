@@ -6,6 +6,7 @@ from temporalio.common import RetryPolicy
 from datetime import timedelta
 from typing import Dict, Any
 import logging
+import asyncio
 
 # Import activities
 with workflow.unsafe.imports_passed_through():
@@ -128,9 +129,9 @@ class FeedPublisherWorkflow:
             )
 
             # Wait for both to complete
-            results = await workflow.wait_all([facebook_task, instagram_task])
-            facebook_result = results[0]
-            instagram_result = results[1]
+            facebook_result, instagram_result = await asyncio.gather(
+                facebook_task, instagram_task
+            )
 
             workflow.logger.info(
                 f"✅ Published - FB: {facebook_result['post_id']}, "
