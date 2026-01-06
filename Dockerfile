@@ -39,6 +39,9 @@ COPY --chown=agent:agent monitoring.py /app/monitoring.py
 COPY --chown=agent:agent entrypoint.sh /app/entrypoint.sh
 COPY --chown=agent:agent tools/ /app/tools/
 
+# Copy Temporal application
+COPY --chown=agent:agent temporal_app/ /app/temporal_app/
+
 # Copy MCP servers if they exist
 COPY --chown=agent:agent mcp-servers/ /app/mcp-servers/
 

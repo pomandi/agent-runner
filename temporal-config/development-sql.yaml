@@ -1,0 +1,18 @@
+system.forceSearchAttributesCacheRefreshOnRead:
+  - value: true
+    constraints: {}
+
+frontend.enableUpdateWorkflowExecution:
+  - value: true
+
+system.enableActivityEagerExecution:
+  - value: true
+
+limit.maxIDLength:
+  - value: 255
+
+frontend.enableSchedules:
+  - value: true
+
+system.enableSchedules:
+  - value: true

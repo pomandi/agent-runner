@@ -1,0 +1,152 @@
+# Docker Compose - Agent Runner Services
+#
+# This file defines the agent services that connect to Temporal infrastructure.
+# The Temporal infrastructure itself is in docker-compose.temporal.yml
+#
+# Usage:
+#   # Start Temporal infrastructure first:
+#   docker compose -f docker-compose.temporal.yml up -d
+#
+#   # Then start agent services:
+#   docker compose up -d
+#
+#   # View logs:
+#   docker compose logs -f agent-worker
+#
+version: '3.8'
+
+services:
+  # Temporal Worker - Executes workflows and activities
+  agent-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agent-worker
+    restart: unless-stopped
+    environment:
+      # Run mode
+      RUN_MODE: worker
+
+      # Temporal configuration
+      TEMPORAL_HOST: temporal:7233
+      TEMPORAL_NAMESPACE: default
+      TEMPORAL_TASK_QUEUE: agent-tasks
+
+      # Claude Agent SDK (required for AI activities)
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN}
+
+      # Langfuse monitoring (optional)
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-https://langfuse.pomandi.com}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+
+      # AWS credentials (for S3 photo access)
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-eu-west-1}
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET:-saleorme}
+
+      # PostgreSQL (for agent-outputs DB)
+      DATABASE_URL: ${DATABASE_URL:-}
+      POSTGRES_HOST: ${POSTGRES_HOST:-}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-agent_outputs}
+      POSTGRES_USER: ${POSTGRES_USER:-}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+
+      # Meta API credentials (for social media publishing)
+      META_ACCESS_TOKEN_POMANDI: ${META_ACCESS_TOKEN_POMANDI:-}
+      META_PAGE_ID_POMANDI: ${META_PAGE_ID_POMANDI:-}
+      META_IG_ACCOUNT_ID_POMANDI: ${META_IG_ACCOUNT_ID_POMANDI:-}
+      META_ACCESS_TOKEN_COSTUME: ${META_ACCESS_TOKEN_COSTUME:-}
+      META_PAGE_ID_COSTUME: ${META_PAGE_ID_COSTUME:-}
+      META_IG_ACCOUNT_ID_COSTUME: ${META_IG_ACCOUNT_ID_COSTUME:-}
+
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+    networks:
+      - temporal-network
+      - agent-network
+
+    depends_on:
+      temporal:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import temporalio; print('OK')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+    volumes:
+      # Mount logs directory
+      - ./logs:/app/logs
+
+  # API Server (optional - for manual triggering)
+  agent-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agent-api
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8080}:8080"
+    environment:
+      # Run mode
+      RUN_MODE: api
+      API_PORT: 8080
+
+      # Claude Agent SDK
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN}
+
+      # Langfuse monitoring
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-https://langfuse.pomandi.com}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+
+      # Same environment as worker for consistency
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-eu-west-1}
+      DATABASE_URL: ${DATABASE_URL:-}
+      POSTGRES_HOST: ${POSTGRES_HOST:-}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB:-agent_outputs}
+      POSTGRES_USER: ${POSTGRES_USER:-}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+    networks:
+      - agent-network
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    volumes:
+      - ./logs:/app/logs
+
+    # This service is optional - comment out if not needed
+    profiles:
+      - api
+
+networks:
+  # Connect to Temporal infrastructure network
+  temporal-network:
+    external: true
+    name: temporal_default
+
+  # Internal agent network
+  agent-network:
+    driver: bridge
+
+volumes:
+  logs:
+    driver: local

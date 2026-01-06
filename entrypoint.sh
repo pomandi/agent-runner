@@ -42,6 +42,7 @@ KEEP_ALIVE="${KEEP_ALIVE:-false}"
 # Check run mode
 RUN_MODE="${RUN_MODE:-sdk}"
 API_PORT="${API_PORT:-8080}"
+TEMPORAL_HOST="${TEMPORAL_HOST:-localhost:7233}"
 
 if [ "$RUN_MODE" = "api" ]; then
     echo "Mode: API Server"
@@ -52,6 +53,28 @@ if [ "$RUN_MODE" = "api" ]; then
 
     # Start FastAPI server
     exec python3 api.py
+
+elif [ "$RUN_MODE" = "worker" ]; then
+    echo "Mode: Temporal Worker"
+    echo "Temporal Host: $TEMPORAL_HOST"
+    echo "Namespace: ${TEMPORAL_NAMESPACE:-default}"
+    echo "Task Queue: ${TEMPORAL_TASK_QUEUE:-agent-tasks}"
+    echo ""
+    echo "----------------------------------------------"
+    echo ""
+
+    # Start Temporal worker
+    exec python3 -m temporal_app.worker
+
+elif [ "$RUN_MODE" = "scheduler" ]; then
+    echo "Mode: Schedule Setup"
+    echo "Temporal Host: $TEMPORAL_HOST"
+    echo ""
+    echo "----------------------------------------------"
+    echo ""
+
+    # Setup Temporal schedules (one-time operation)
+    exec python3 -m temporal_app.schedules.daily_tasks
 
 elif [ "$RUN_MODE" = "sdk" ]; then
     echo "Mode: SDK Runner"
@@ -81,6 +104,6 @@ elif [ "$RUN_MODE" = "sdk" ]; then
     exit $EXIT_CODE
 else
     echo "ERROR: Invalid RUN_MODE: $RUN_MODE"
-    echo "Valid modes: api, sdk"
+    echo "Valid modes: api, sdk, worker, scheduler"
     exit 1
 fi
