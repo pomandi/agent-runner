@@ -2,6 +2,7 @@
 Feed Publisher Workflow - Main daily posting workflow.
 """
 from temporalio import workflow
+from temporalio.common import RetryPolicy
 from datetime import timedelta
 from typing import Dict, Any
 import logging
@@ -64,7 +65,7 @@ class FeedPublisherWorkflow:
                 get_random_unused_photo,
                 args=[brand],
                 start_to_close_timeout=timedelta(minutes=2),
-                retry_policy=workflow.RetryPolicy(
+                retry_policy=RetryPolicy(
                     maximum_attempts=3,
                     initial_interval=timedelta(seconds=10),
                     maximum_interval=timedelta(seconds=60),
@@ -82,7 +83,7 @@ class FeedPublisherWorkflow:
                 view_image,
                 args=[photo_key],
                 start_to_close_timeout=timedelta(minutes=1),
-                retry_policy=workflow.RetryPolicy(
+                retry_policy=RetryPolicy(
                     maximum_attempts=2,
                 ),
             )
@@ -96,7 +97,7 @@ class FeedPublisherWorkflow:
                 generate_caption,
                 args=[image_description, brand, language],
                 start_to_close_timeout=timedelta(minutes=3),
-                retry_policy=workflow.RetryPolicy(
+                retry_policy=RetryPolicy(
                     maximum_attempts=2,  # AI calls can be expensive, limit retries
                     initial_interval=timedelta(seconds=30),
                 ),
@@ -112,7 +113,7 @@ class FeedPublisherWorkflow:
                 publish_facebook_photo,
                 args=[brand, image_url, caption],
                 start_to_close_timeout=timedelta(minutes=5),
-                retry_policy=workflow.RetryPolicy(
+                retry_policy=RetryPolicy(
                     maximum_attempts=3,
                 ),
             )
@@ -121,7 +122,7 @@ class FeedPublisherWorkflow:
                 publish_instagram_photo,
                 args=[brand, image_url, caption],
                 start_to_close_timeout=timedelta(minutes=5),
-                retry_policy=workflow.RetryPolicy(
+                retry_policy=RetryPolicy(
                     maximum_attempts=3,
                 ),
             )
@@ -148,7 +149,7 @@ class FeedPublisherWorkflow:
                     caption,
                 ],
                 start_to_close_timeout=timedelta(minutes=1),
-                retry_policy=workflow.RetryPolicy(
+                retry_policy=RetryPolicy(
                     maximum_attempts=2,
                 ),
             )
