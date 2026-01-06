@@ -81,8 +81,8 @@ async def setup_schedules():
                 ),
                 spec=ScheduleSpec(
                     calendars=[
-                        ScheduleCalendarSpec(hour=9, minute=0),   # 09:00 UTC
-                        ScheduleCalendarSpec(hour=18, minute=0),  # 18:00 UTC
+                        ScheduleCalendarSpec(hour=[9], minute=[0]),   # 09:00 UTC
+                        ScheduleCalendarSpec(hour=[18], minute=[0]),  # 18:00 UTC
                     ]
                 ),
                 state=ScheduleState(
@@ -123,8 +123,8 @@ async def setup_schedules():
                 ),
                 spec=ScheduleSpec(
                     calendars=[
-                        ScheduleCalendarSpec(hour=10, minute=0),  # 10:00 UTC
-                        ScheduleCalendarSpec(hour=19, minute=0),  # 19:00 UTC
+                        ScheduleCalendarSpec(hour=[10], minute=[0]),  # 10:00 UTC
+                        ScheduleCalendarSpec(hour=[19], minute=[0]),  # 19:00 UTC
                     ]
                 ),
                 state=ScheduleState(
