@@ -158,12 +158,14 @@ class LangfuseClient:
             return None
 
         try:
-            self._current_trace = self.langfuse.trace(
+            # Langfuse SDK v3 API - use start_as_current_observation
+            self._current_trace = self.langfuse.start_as_current_observation(
+                as_type="span",
                 name=agent_name,
                 input={"task": task},
                 metadata=metadata or {},
             )
-            trace_id = self._current_trace.id
+            trace_id = self.langfuse.get_current_trace_id()
             logger.info(f"Langfuse trace started: {agent_name} (id={trace_id})")
             return trace_id
         except Exception as e:
@@ -194,7 +196,9 @@ class LangfuseClient:
             self._span_counter += 1
             span_id = f"span_{self._span_counter}"
 
-            span = self._current_trace.span(
+            # Langfuse SDK v3 API - nested observation
+            span = self.langfuse.start_as_current_observation(
+                as_type="span",
                 name=name,
                 input=input_data or {},
                 metadata={"type": span_type},
@@ -231,11 +235,13 @@ class LangfuseClient:
 
         try:
             span = self._spans[span_id]
-            span.end(
+            # Langfuse SDK v3 API - update and end span
+            span.update(
                 output=output_data or {},
                 level="ERROR" if error_message else "DEFAULT",
                 status_message=error_message,
             )
+            span.end()
             del self._spans[span_id]
             logger.debug(f"Langfuse span completed: {span_id}")
             return True
@@ -290,7 +296,7 @@ class LangfuseClient:
             if cost_usd:
                 usage["total_cost"] = cost_usd
 
-            # Update trace with final data
+            # Langfuse SDK v3 API - update and end trace
             self._current_trace.update(
                 output=output if output else {"status": status},
                 level="ERROR" if error_message else "DEFAULT",
@@ -299,6 +305,7 @@ class LangfuseClient:
                     "cost_usd": cost_usd,
                 } if cost_usd else {"status": status},
             )
+            self._current_trace.end()
 
             # Flush to send data
             self.langfuse.flush()
