@@ -158,14 +158,13 @@ class LangfuseClient:
             return None
 
         try:
-            # Langfuse SDK v3 API - use start_as_current_observation
-            self._current_trace = self.langfuse.start_as_current_observation(
-                as_type="span",
+            # Langfuse SDK v3 API - use start_span() for manual control
+            self._current_trace = self.langfuse.start_span(
                 name=agent_name,
                 input={"task": task},
                 metadata=metadata or {},
             )
-            trace_id = self.langfuse.get_current_trace_id()
+            trace_id = self._current_trace.trace_id if hasattr(self._current_trace, 'trace_id') else None
             logger.info(f"Langfuse trace started: {agent_name} (id={trace_id})")
             return trace_id
         except Exception as e:
@@ -196,9 +195,8 @@ class LangfuseClient:
             self._span_counter += 1
             span_id = f"span_{self._span_counter}"
 
-            # Langfuse SDK v3 API - nested observation
-            span = self.langfuse.start_as_current_observation(
-                as_type="span",
+            # Langfuse SDK v3 API - create nested span from parent
+            span = self._current_trace.start_span(
                 name=name,
                 input=input_data or {},
                 metadata={"type": span_type},
