@@ -40,7 +40,7 @@ services:
         condition: service_healthy
     image: temporalio/auto-setup:1.25.1
     environment:
-      - DB=postgresql
+      - DB=postgres12
       - DB_PORT=5432
       - POSTGRES_USER=temporal
       - POSTGRES_PWD=${TEMPORAL_DB_PASSWORD:-temporal123}
