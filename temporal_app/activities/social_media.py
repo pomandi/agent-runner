@@ -202,39 +202,31 @@ async def generate_caption(
     try:
         from claude_agent_sdk import query, ClaudeAgentOptions
 
-        prompt = f"""Create a compelling {language.upper()} social media caption for this product:
+        prompt = f"""Generate a {language.upper()} social media caption.
 
 Product: {image_description}
 Brand: {brand}
-Language: {language}
+Link: https://pomandi.com/default-channel/appointment?locale={language}
 
-Requirements:
-- Engaging and authentic
-- Include product highlights
-- Add call-to-action
-- Include appointment link: https://pomandi.com/default-channel/appointment?locale={language}
-- Max 2200 characters
-- Natural and conversational tone
+CRITICAL: Your ENTIRE response must be ONLY the caption text in {language.upper()} language.
+NO English. NO meta-text. NO explanations.
 
-CRITICAL INSTRUCTION:
-Output ONLY the final caption text itself.
-Do NOT include ANY meta-text like:
-- "Here's a caption:"
-- "Based on the product..."
-- "I've created..."
-- Or any other introduction/explanation
+WRONG (DO NOT DO THIS):
+"I need to see the product..."
+"Here's a caption:"
+"Based on the product..."
 
-Start your response DIRECTLY with the caption content. Your entire response should be copy-paste ready.
+RIGHT (DO THIS):
+Start IMMEDIATELY with the {language.upper()} caption text like:
+"✨ Ontdek deze prachtige..." (if nl)
+"✨ Découvrez ce magnifique..." (if fr)
 """
 
         options = ClaudeAgentOptions(
-            system_prompt="""You are a social media caption generator for fashion brands.
-
-CRITICAL RULE: You MUST output ONLY the caption text itself, nothing else.
-Do NOT include introductions like "Here's a caption:" or "Based on the product...".
-Do NOT add explanations, commentary, or meta-text.
-
-Your response should be 100% copy-paste ready caption text that can be posted directly to social media.""",
+            system_prompt=f"""You output ONLY {language.upper()} caption text. Nothing else.
+NO English explanations. NO meta-text. NO introductions.
+Your FIRST word must be in {language.upper()} language.
+If you write anything in English, you FAILED.""",
             max_turns=1,
         )
 
@@ -247,7 +239,43 @@ Your response should be 100% copy-paste ready caption text that can be posted di
 
         activity.heartbeat("Caption generated")
 
-        return caption.strip()
+        # Post-processing: Remove common meta-text patterns
+        caption_clean = caption.strip()
+
+        # Remove English meta-text if found
+        meta_patterns = [
+            "I need to see",
+            "Here's a caption",
+            "Based on the product",
+            "I've created",
+            "Here is",
+            "Let me create",
+            "I'll create",
+            "Could you please",
+        ]
+
+        for pattern in meta_patterns:
+            if caption_clean.startswith(pattern):
+                # Find the first line break or period after meta-text
+                lines = caption_clean.split('\n', 1)
+                if len(lines) > 1:
+                    caption_clean = lines[1].strip()
+                    activity.logger.warning(f"Removed meta-text starting with: {pattern}")
+                    break
+
+        # Extra safety: If caption starts with English and we want NL/FR, it's likely meta-text
+        if caption_clean and not caption_clean[0].isalpha():
+            # Starts with emoji/special char, probably ok
+            pass
+        elif language in ['nl', 'fr'] and caption_clean[:50].count('I ') > 0:
+            # Contains English "I " pronouns in first 50 chars - likely meta-text
+            activity.logger.warning("Detected English meta-text in non-English caption, attempting cleanup")
+            # Try to find actual caption after first paragraph
+            paragraphs = caption_clean.split('\n\n')
+            if len(paragraphs) > 1:
+                caption_clean = paragraphs[-1].strip()
+
+        return caption_clean
     except Exception as e:
         activity.logger.error(f"Failed to generate caption: {e}")
         raise
