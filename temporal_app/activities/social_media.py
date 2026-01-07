@@ -190,7 +190,8 @@ Provide a concise, marketing-focused description (2-3 sentences)."""
 async def generate_caption(
     image_description: str,
     brand: str,
-    language: str = "nl"
+    language: str = "nl",
+    image_url: str = None
 ) -> str:
     """
     Generate social media caption using Claude.
@@ -201,37 +202,75 @@ async def generate_caption(
 
     try:
         from claude_agent_sdk import query, ClaudeAgentOptions
+        import anthropic
 
-        prompt = f"""Generate a {language.upper()} social media caption.
+        # Build prompt with product description
+        prompt = f"""Write a compelling social media caption in {language.upper()} for this product.
 
-Product: {image_description}
 Brand: {brand}
+Description: {image_description}
 Link: https://pomandi.com/default-channel/appointment?locale={language}
 
-CRITICAL: Your ENTIRE response must be ONLY the caption text in {language.upper()} language.
-NO English. NO meta-text. NO explanations.
+CRITICAL RULES:
+1. Output ONLY the caption text in {language.upper()}
+2. NO English words. NO explanations. NO meta-text.
+3. Start IMMEDIATELY with {language.upper()} text
+4. Make it engaging and promotional
+5. Include relevant emojis
 
-WRONG (DO NOT DO THIS):
-"I need to see the product..."
-"Here's a caption:"
-"Based on the product..."
-
-RIGHT (DO THIS):
-Start IMMEDIATELY with the {language.upper()} caption text like:
-"✨ Ontdek deze prachtige..." (if nl)
-"✨ Découvrez ce magnifique..." (if fr)
+Example START (for {language}):
+{'"✨ Ontdek deze prachtige..." (if nl)' if language == 'nl' else '"✨ Découvrez ce magnifique..." (if fr)'}
 """
 
+        # Build message content with image if available
+        if image_url:
+            # Download image and encode for Claude
+            import httpx
+            import base64
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(image_url)
+                response.raise_for_status()
+                image_data = response.content
+                image_base64 = base64.b64encode(image_data).decode('utf-8')
+
+            # Determine image type
+            if image_url.lower().endswith('.png'):
+                media_type = "image/png"
+            elif image_url.lower().endswith('.webp'):
+                media_type = "image/webp"
+            else:
+                media_type = "image/jpeg"
+
+            # Create message with image
+            message_content = [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": image_base64,
+                    }
+                },
+                {
+                    "type": "text",
+                    "text": prompt
+                }
+            ]
+        else:
+            message_content = prompt
+
         options = ClaudeAgentOptions(
-            system_prompt=f"""You output ONLY {language.upper()} caption text. Nothing else.
-NO English explanations. NO meta-text. NO introductions.
-Your FIRST word must be in {language.upper()} language.
-If you write anything in English, you FAILED.""",
+            system_prompt=f"""You are a {language.upper()} social media copywriter.
+Output ONLY {language.upper()} caption text. Nothing else.
+NO English. NO meta-text. NO introductions. NO questions.
+Your FIRST word MUST be in {language.upper()} language.
+DO NOT ask to see images. DO NOT explain. Just write the caption.""",
             max_turns=1,
         )
 
         caption = ""
-        async for message in query(prompt=prompt, options=options):
+        async for message in query(prompt=message_content, options=options):
             if hasattr(message, 'content'):
                 for block in message.content:
                     if hasattr(block, 'text'):
@@ -242,7 +281,7 @@ If you write anything in English, you FAILED.""",
         # Post-processing: Remove common meta-text patterns
         caption_clean = caption.strip()
 
-        # Remove English meta-text if found
+        # Remove English and Dutch/French meta-text if found
         meta_patterns = [
             "I need to see",
             "Here's a caption",
@@ -252,6 +291,13 @@ If you write anything in English, you FAILED.""",
             "Let me create",
             "I'll create",
             "Could you please",
+            "Ik zie dat",  # Dutch: "I see that"
+            "Ik heb",  # Dutch: "I have"
+            "Je kunt",  # Dutch: "You can"
+            "maar er is geen",  # Dutch: "but there is no"
+            "Zou je",  # Dutch: "Would you"
+            "Je vois que",  # French: "I see that"
+            "J'ai besoin",  # French: "I need"
         ]
 
         for pattern in meta_patterns:

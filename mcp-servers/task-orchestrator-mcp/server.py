@@ -21,8 +21,13 @@ import sys
 from typing import Any, Dict
 
 # Add parent directories to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+current_dir = os.path.dirname(os.path.abspath(__file__))
+mcp_servers_dir = os.path.dirname(current_dir)
+agent_runner_root = os.path.dirname(mcp_servers_dir)
+
+sys.path.insert(0, current_dir)  # task-orchestrator-mcp
+sys.path.insert(0, mcp_servers_dir)  # mcp-servers
+sys.path.insert(0, agent_runner_root)  # agent-runner root (contains temporal_app)
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -94,13 +99,29 @@ async def tool_trigger_workflow(args: Dict[str, Any]) -> str:
     if not workflow_type:
         return "❌ workflow_type required"
 
-    # Dynamic workflow import
-    from temporal_app.workflows import feed_publisher
+    # Dynamic workflow import - try different modules
+    workflow_class = None
 
-    workflow_class = getattr(feed_publisher, workflow_type, None)
+    # Map workflow classes to their modules
+    workflow_map = {
+        'FeedPublisherWorkflow': 'temporal_app.workflows.feed_publisher',
+        'AppointmentCollectorWorkflow': 'temporal_app.workflows.appointment_collector',
+    }
+
+    module_name = workflow_map.get(workflow_type)
+
+    if module_name:
+        try:
+            # Import the module
+            import importlib
+            module = importlib.import_module(module_name)
+            workflow_class = getattr(module, workflow_type, None)
+        except (ImportError, AttributeError) as e:
+            return f"❌ Failed to import workflow '{workflow_type}': {e}"
 
     if not workflow_class:
-        return f"❌ Workflow class '{workflow_type}' not found"
+        available = ', '.join(workflow_map.keys())
+        return f"❌ Workflow '{workflow_type}' not found. Available: {available}"
 
     # Generate ID if not provided
     if not workflow_id:

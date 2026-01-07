@@ -1,0 +1,13 @@
+# Google Ads MCP Server Dependencies
+
+# MCP SDK
+mcp>=1.0.0
+
+# Google Ads API
+google-ads>=25.0.0
+
+# Protocol Buffers
+protobuf>=4.25.0
+
+# Async support
+asyncio-mqtt>=0.16.0

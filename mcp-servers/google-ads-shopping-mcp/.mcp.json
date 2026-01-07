@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "google-ads-shopping": {
+      "command": "python",
+      "args": ["-m", "google_ads_shopping_mcp.server"],
+      "cwd": "C:\\software-project\\sale-v2\\google-ads-shopping-mcp",
+      "env": {
+        "PYTHONPATH": "C:\\software-project\\sale-v2\\google-ads-shopping-mcp"
+      }
+    }
+  }
+}

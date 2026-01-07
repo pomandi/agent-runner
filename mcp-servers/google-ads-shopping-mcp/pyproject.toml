@@ -1,0 +1,27 @@
+[project]
+name = "google-ads-shopping-mcp"
+version = "1.0.0"
+requires-python = ">=3.9, <3.14"
+license = "Apache-2.0"
+description = "MCP Server for Google Ads Shopping Campaign Management"
+dependencies = [
+    "google-ads>=25.0.0",
+    "google-auth~=2.40",
+    "mcp[cli]>=1.2.0",
+    "httpx>=0.28.1",
+    "pyyaml>=6.0"
+]
+
+[project.scripts]
+google-ads-shopping-mcp = "google_ads_shopping_mcp.server:run_server"
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "pytest>=7.0.0",
+    "nox >= 2020.12.31, < 2022.6"
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_backend"

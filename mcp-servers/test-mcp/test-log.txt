@@ -1,0 +1,6 @@
+[2025-12-23T11:39:31.242815] Agent: direct-test | Message: MCP test basarili\!
+[2025-12-23T11:41:15.989903] Agent: simulated-mcp-agent | Message: MCP server test - Tool cagirma simulasyonu basarili\!
+[2025-12-23T12:34:39.961042] Agent: main-claude | Message: Direct MCP test from main Claude - 2025-12-23
+[2025-12-23T12:38:05.042252] Agent: main-claude-direct | Message: Direct test after agent fix - 2025-12-23 12:40
+[2025-12-23T12:41:53.444323] Agent: main-claude-direct | Message: Direct test from main Claude - checking MCP access
+[2025-12-23T12:49:54.066384] Agent: test-agent-fixed | Message: Agent MCP test success
