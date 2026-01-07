@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 # Import workflows
 from temporal_app.workflows.feed_publisher import FeedPublisherWorkflow
+from temporal_app.workflows.appointment_collector import AppointmentCollectorWorkflow
 
 # Import activities
 from temporal_app.activities.social_media import (
@@ -26,6 +27,11 @@ from temporal_app.activities.social_media import (
     publish_facebook_photo,
     publish_instagram_photo,
     save_publication_report,
+)
+from temporal_app.activities.appointment_activities import (
+    collect_appointments,
+    analyze_appointments,
+    save_appointment_report,
 )
 
 logging.basicConfig(
@@ -59,7 +65,10 @@ async def run_worker():
     worker = Worker(
         client,
         task_queue=task_queue,
-        workflows=[FeedPublisherWorkflow],
+        workflows=[
+            FeedPublisherWorkflow,
+            AppointmentCollectorWorkflow,
+        ],
         activities=[
             get_random_unused_photo,
             view_image,
@@ -67,6 +76,9 @@ async def run_worker():
             publish_facebook_photo,
             publish_instagram_photo,
             save_publication_report,
+            collect_appointments,
+            analyze_appointments,
+            save_appointment_report,
         ],
         max_concurrent_activities=10,
         max_concurrent_workflow_tasks=10,
@@ -76,6 +88,7 @@ async def run_worker():
     logger.info(f"✅ Worker initialized on task queue: {task_queue}")
     logger.info("Registered workflows:")
     logger.info("  - FeedPublisherWorkflow")
+    logger.info("  - AppointmentCollectorWorkflow")
     logger.info("Registered activities:")
     logger.info("  - get_random_unused_photo")
     logger.info("  - view_image")
@@ -83,6 +96,9 @@ async def run_worker():
     logger.info("  - publish_facebook_photo")
     logger.info("  - publish_instagram_photo")
     logger.info("  - save_publication_report")
+    logger.info("  - collect_appointments")
+    logger.info("  - analyze_appointments")
+    logger.info("  - save_appointment_report")
     logger.info("=" * 60)
     logger.info("🎧 Listening for workflow tasks...")
     logger.info("Press Ctrl+C to stop")
