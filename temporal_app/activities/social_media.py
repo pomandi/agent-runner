@@ -216,11 +216,25 @@ Requirements:
 - Max 2200 characters
 - Natural and conversational tone
 
-Return ONLY the caption text, no explanations.
+CRITICAL INSTRUCTION:
+Output ONLY the final caption text itself.
+Do NOT include ANY meta-text like:
+- "Here's a caption:"
+- "Based on the product..."
+- "I've created..."
+- Or any other introduction/explanation
+
+Start your response DIRECTLY with the caption content. Your entire response should be copy-paste ready.
 """
 
         options = ClaudeAgentOptions(
-            system_prompt="You are a social media marketing expert specializing in fashion and formal wear.",
+            system_prompt="""You are a social media caption generator for fashion brands.
+
+CRITICAL RULE: You MUST output ONLY the caption text itself, nothing else.
+Do NOT include introductions like "Here's a caption:" or "Based on the product...".
+Do NOT add explanations, commentary, or meta-text.
+
+Your response should be 100% copy-paste ready caption text that can be posted directly to social media.""",
             max_turns=1,
         )
 
@@ -258,26 +272,47 @@ async def publish_facebook_photo(
         brand_config = {
             "pomandi": {
                 "page_id": os.getenv("META_PAGE_ID_POMANDI", "335388637037718"),
-                "access_token": os.getenv("META_ACCESS_TOKEN_POMANDI")
+                "user_access_token": os.getenv("META_ACCESS_TOKEN_POMANDI")
             },
             "costume": {
                 "page_id": os.getenv("META_PAGE_ID_COSTUME", "101071881743506"),
-                "access_token": os.getenv("META_ACCESS_TOKEN_COSTUME")
+                "user_access_token": os.getenv("META_ACCESS_TOKEN_COSTUME")
             }
         }
 
         config = brand_config.get(brand.lower())
-        if not config or not config["access_token"]:
+        if not config or not config["user_access_token"]:
             raise ValueError(f"Missing Facebook configuration for brand: {brand}")
 
-        # Publish to Facebook Page
         async with httpx.AsyncClient(timeout=30.0) as client:
+            # Step 1: Get page access token from user access token
+            activity.logger.info("Fetching page access token...")
+            accounts_response = await client.get(
+                f"https://graph.facebook.com/v21.0/me/accounts",
+                params={"access_token": config["user_access_token"]}
+            )
+            accounts_response.raise_for_status()
+            accounts_data = accounts_response.json()
+
+            # Find the page access token for our page ID
+            page_access_token = None
+            for page in accounts_data.get("data", []):
+                if page["id"] == config["page_id"]:
+                    page_access_token = page["access_token"]
+                    activity.logger.info(f"Found page access token for {page['name']}")
+                    break
+
+            if not page_access_token:
+                raise ValueError(f"Page ID {config['page_id']} not found in accessible pages")
+
+            # Step 2: Publish to Facebook Page using page access token
+            activity.logger.info("Publishing photo to Facebook...")
             response = await client.post(
                 f"https://graph.facebook.com/v21.0/{config['page_id']}/photos",
                 data={
                     "url": image_url,
                     "caption": caption,
-                    "access_token": config["access_token"]
+                    "access_token": page_access_token
                 }
             )
 
@@ -317,20 +352,42 @@ async def publish_instagram_photo(
         # Brand configuration
         brand_config = {
             "pomandi": {
+                "page_id": os.getenv("META_PAGE_ID_POMANDI", "335388637037718"),
                 "instagram_id": os.getenv("META_IG_ACCOUNT_ID_POMANDI", "17841406855004574"),
-                "access_token": os.getenv("META_ACCESS_TOKEN_POMANDI")
+                "user_access_token": os.getenv("META_ACCESS_TOKEN_POMANDI")
             },
             "costume": {
+                "page_id": os.getenv("META_PAGE_ID_COSTUME", "101071881743506"),
                 "instagram_id": os.getenv("META_IG_ACCOUNT_ID_COSTUME", "17841441106266856"),
-                "access_token": os.getenv("META_ACCESS_TOKEN_COSTUME")
+                "user_access_token": os.getenv("META_ACCESS_TOKEN_COSTUME")
             }
         }
 
         config = brand_config.get(brand.lower())
-        if not config or not config["access_token"]:
+        if not config or not config["user_access_token"]:
             raise ValueError(f"Missing Instagram configuration for brand: {brand}")
 
         async with httpx.AsyncClient(timeout=60.0) as client:
+            # Step 0: Get page access token from user access token
+            activity.logger.info("Fetching page access token...")
+            accounts_response = await client.get(
+                f"https://graph.facebook.com/v21.0/me/accounts",
+                params={"access_token": config["user_access_token"]}
+            )
+            accounts_response.raise_for_status()
+            accounts_data = accounts_response.json()
+
+            # Find the page access token for our page ID
+            page_access_token = None
+            for page in accounts_data.get("data", []):
+                if page["id"] == config["page_id"]:
+                    page_access_token = page["access_token"]
+                    activity.logger.info(f"Found page access token for {page['name']}")
+                    break
+
+            if not page_access_token:
+                raise ValueError(f"Page ID {config['page_id']} not found in accessible pages")
+
             # Step 1: Create media container
             activity.logger.info("Creating Instagram media container...")
             create_response = await client.post(
@@ -338,7 +395,7 @@ async def publish_instagram_photo(
                 data={
                     "image_url": image_url,
                     "caption": caption,
-                    "access_token": config["access_token"]
+                    "access_token": page_access_token
                 }
             )
 
@@ -361,7 +418,7 @@ async def publish_instagram_photo(
                 f"https://graph.facebook.com/v21.0/{config['instagram_id']}/media_publish",
                 data={
                     "creation_id": container_id,
-                    "access_token": config["access_token"]
+                    "access_token": page_access_token
                 }
             )
 
