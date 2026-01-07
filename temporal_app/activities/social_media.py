@@ -201,7 +201,6 @@ async def generate_caption(
 
     try:
         from claude_agent_sdk import query, ClaudeAgentOptions
-        import anthropic
 
         # Build prompt with product description
         prompt = f"""Write a compelling social media caption in {language.upper()} for this product.
