@@ -461,7 +461,7 @@ async def publish_instagram_photo(
                 raise ValueError(f"Page ID {config['page_id']} not found in accessible pages")
 
             # Step 1: Create media container
-            activity.logger.info("Creating Instagram media container...")
+            activity.logger.info(f"Creating Instagram media container for image: {image_url[:100]}...")
             create_response = await client.post(
                 f"https://graph.facebook.com/v21.0/{config['instagram_id']}/media",
                 data={
@@ -471,6 +471,10 @@ async def publish_instagram_photo(
                 }
             )
 
+            # Log error details before raising
+            if create_response.status_code != 200:
+                error_body = create_response.text
+                activity.logger.error(f"Instagram API error {create_response.status_code}: {error_body}")
             create_response.raise_for_status()
             create_data = create_response.json()
             container_id = create_data.get("id")
