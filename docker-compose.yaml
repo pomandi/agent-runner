@@ -47,7 +47,8 @@ services:
       - POSTGRES_SEEDS=postgresql
       - ENABLE_ES=false
       - LOG_LEVEL=info
-    # Port removed for Coolify deployment - use internal network only
+    ports:
+      - "7233:7233"
     networks:
       - temporal-network
     healthcheck:
