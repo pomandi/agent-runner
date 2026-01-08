@@ -42,6 +42,12 @@ COPY --chown=agent:agent tools/ /app/tools/
 # Copy Temporal application
 COPY --chown=agent:agent temporal_app/ /app/temporal_app/
 
+# Copy Memory layer (Qdrant, Redis, embeddings)
+COPY --chown=agent:agent memory/ /app/memory/
+
+# Copy LangGraph agents
+COPY --chown=agent:agent langgraph_agents/ /app/langgraph_agents/
+
 # Copy MCP servers if they exist
 COPY --chown=agent:agent mcp-servers/ /app/mcp-servers/
 
@@ -60,6 +66,7 @@ ENV AGENT_TASK="Run the default agent task"
 ENV LOG_LEVEL=INFO
 ENV KEEP_ALIVE=false
 ENV HOME=/home/agent
+ENV PYTHONPATH=/app
 
 WORKDIR /app
 

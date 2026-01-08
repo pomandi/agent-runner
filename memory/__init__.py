@@ -15,8 +15,8 @@ Usage:
     results = await manager.search("invoices", "SNCB train ticket")
 """
 
-from .memory_manager import MemoryManager
+from .memory_manager import MemoryManager, get_memory_manager
 from .collections import CollectionName, COLLECTION_CONFIGS
 
-__all__ = ["MemoryManager", "CollectionName", "COLLECTION_CONFIGS"]
+__all__ = ["MemoryManager", "get_memory_manager", "CollectionName", "COLLECTION_CONFIGS"]
 __version__ = "1.0.0"
