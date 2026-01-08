@@ -65,8 +65,8 @@ class BaseAgentGraph:
         """
         # Initialize memory if enabled
         if self.enable_memory and self.memory_manager is None:
-            from memory import get_memory_manager
-            self.memory_manager = await get_memory_manager()
+            self.memory_manager = MemoryManager()
+            await self.memory_manager.initialize()
 
         # Build and compile graph
         self.graph = self.build_graph()

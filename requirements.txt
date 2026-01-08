@@ -69,3 +69,9 @@ pydantic>=2.0.0
 pydantic-settings>=2.0.0
 tenacity>=8.2.0
 structlog>=24.0.0
+
+# ============================================================================
+# MONITORING (Phase 4)
+# ============================================================================
+prometheus-client>=0.20.0  # Prometheus metrics
+braintrust>=0.0.100  # Optional - evaluation tracking

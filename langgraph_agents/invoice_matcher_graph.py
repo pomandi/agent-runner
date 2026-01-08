@@ -20,9 +20,17 @@ Decision thresholds:
 from typing import Dict, Any
 from langgraph.graph import StateGraph, END
 import structlog
+import time
 
 from .base_graph import BaseAgentGraph
 from .state_schemas import InvoiceMatchState, init_invoice_match_state
+
+# Import monitoring metrics
+try:
+    from monitoring.metrics import record_agent_execution, AgentMetrics
+    METRICS_AVAILABLE = True
+except ImportError:
+    METRICS_AVAILABLE = False
 
 logger = structlog.get_logger(__name__)
 
@@ -377,19 +385,51 @@ Reasoning: {state['reasoning']}
         Returns:
             Matching result with decision
         """
-        # Initialize state
-        initial_state = init_invoice_match_state(transaction, invoices)
+        # Start timing
+        start_time = time.time()
+        status = "success"
 
-        # Run graph
-        final_state = await self.run(**initial_state)
+        try:
+            # Initialize state
+            initial_state = init_invoice_match_state(transaction, invoices)
 
-        # Return result
-        return {
-            "matched": final_state.get("matched_invoice_id") is not None,
-            "invoice_id": final_state.get("matched_invoice_id"),
-            "confidence": final_state.get("confidence", 0.0),
-            "decision_type": final_state.get("decision_type"),
-            "reasoning": final_state.get("reasoning", ""),
-            "warnings": final_state.get("warnings", []),
-            "steps_completed": final_state.get("steps_completed", [])
-        }
+            # Run graph
+            final_state = await self.run(**initial_state)
+
+            # Build result
+            result = {
+                "matched": final_state.get("matched_invoice_id") is not None,
+                "invoice_id": final_state.get("matched_invoice_id"),
+                "confidence": final_state.get("confidence", 0.0),
+                "decision_type": final_state.get("decision_type"),
+                "reasoning": final_state.get("reasoning", ""),
+                "warnings": final_state.get("warnings", []),
+                "steps_completed": final_state.get("steps_completed", [])
+            }
+
+            # Record metrics
+            if METRICS_AVAILABLE:
+                duration = time.time() - start_time
+                record_agent_execution(
+                    agent_name="invoice_matcher",
+                    duration_seconds=duration,
+                    status=status,
+                    confidence=result["confidence"],
+                    decision_type=result["decision_type"]
+                )
+
+            return result
+
+        except Exception as e:
+            status = "failure"
+            duration = time.time() - start_time
+
+            # Record failure metrics
+            if METRICS_AVAILABLE:
+                record_agent_execution(
+                    agent_name="invoice_matcher",
+                    duration_seconds=duration,
+                    status=status
+                )
+
+            raise

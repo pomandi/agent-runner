@@ -23,9 +23,18 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 from langgraph.graph import StateGraph, END
 import structlog
+import time
+import os
 
 from .base_graph import BaseAgentGraph
 from .state_schemas import FeedPublisherState, init_feed_publisher_state
+
+# Import monitoring metrics
+try:
+    from monitoring.metrics import record_agent_execution, AgentMetrics
+    METRICS_AVAILABLE = True
+except ImportError:
+    METRICS_AVAILABLE = False
 
 logger = structlog.get_logger(__name__)
 
@@ -361,7 +370,7 @@ Return plain text caption only."""
         state: FeedPublisherState
     ) -> FeedPublisherState:
         """
-        Node: Publish caption to Facebook/Instagram.
+        Node: Publish caption to Facebook/Instagram using MCP feed-publisher server.
 
         Args:
             state: Current state
@@ -374,14 +383,107 @@ Return plain text caption only."""
         caption = state["caption"]
         photo_s3_key = state["photo_s3_key"]
 
-        # TODO: Use MCP social-media-publisher to actually publish
-        # For now, simulate publishing
-        if platform == "facebook":
-            state["facebook_post_id"] = f"fb_{brand}_{datetime.now().timestamp()}"
-        elif platform == "instagram":
-            state["instagram_post_id"] = f"ig_{brand}_{datetime.now().timestamp()}"
+        try:
+            # Get presigned S3 URL for the image
+            import boto3
+            s3 = boto3.client('s3',
+                aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+                aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+                region_name=os.getenv('AWS_S3_REGION_NAME', 'us-east-1')
+            )
 
-        state["published_at"] = datetime.now()
+            bucket = os.getenv('AWS_STORAGE_BUCKET_NAME', 'saleorme')
+            image_url = s3.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': bucket, 'Key': photo_s3_key},
+                ExpiresIn=3600
+            )
+
+            # Publish to platform using MCP server (via httpx call to Graph API)
+            import httpx
+            graph_api_url = "https://graph.facebook.com/v22.0"
+
+            # Get brand config
+            brand_config = {
+                "pomandi": {
+                    "facebook_page_id": "335388637037718",
+                    "instagram_id": "17841406855004574",
+                    "access_token_env": "FACE_POMANDI_ACCESS_TOKEN"
+                },
+                "costume": {
+                    "facebook_page_id": "101071881743506",
+                    "instagram_id": "17841441106266856",
+                    "access_token_env": "FACE_COSTUME_ACCESS_TOKEN"
+                }
+            }
+
+            config = brand_config.get(brand)
+            if not config:
+                raise ValueError(f"Unknown brand: {brand}")
+
+            access_token = os.getenv(config["access_token_env"])
+            if not access_token:
+                raise ValueError(f"Access token not found for {brand}")
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                if platform == "facebook":
+                    # Publish to Facebook
+                    response = await client.post(
+                        f"{graph_api_url}/{config['facebook_page_id']}/photos",
+                        data={
+                            "url": image_url,
+                            "caption": caption,
+                            "access_token": access_token
+                        }
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    state["facebook_post_id"] = result.get("id", result.get("post_id"))
+
+                elif platform == "instagram":
+                    # Instagram requires 2-step process: create container, then publish
+                    # Step 1: Create media container
+                    container_response = await client.post(
+                        f"{graph_api_url}/{config['instagram_id']}/media",
+                        data={
+                            "image_url": image_url,
+                            "caption": caption,
+                            "access_token": access_token
+                        }
+                    )
+                    container_response.raise_for_status()
+                    container_id = container_response.json()["id"]
+
+                    # Step 2: Publish the container
+                    publish_response = await client.post(
+                        f"{graph_api_url}/{config['instagram_id']}/media_publish",
+                        data={
+                            "creation_id": container_id,
+                            "access_token": access_token
+                        }
+                    )
+                    publish_response.raise_for_status()
+                    state["instagram_post_id"] = publish_response.json()["id"]
+
+                state["published_at"] = datetime.now()
+
+                logger.info(
+                    "post_published_success",
+                    brand=brand,
+                    platform=platform,
+                    post_id=state.get("facebook_post_id") or state.get("instagram_post_id"),
+                    caption_preview=caption[:50]
+                )
+
+        except Exception as e:
+            logger.error(
+                "post_publish_failed",
+                brand=brand,
+                platform=platform,
+                error=str(e)
+            )
+            state = self.add_warning(state, f"Publishing failed: {str(e)}")
+            # Don't raise - allow workflow to continue
 
         state = self.add_step(state, "publish")
 
@@ -457,22 +559,62 @@ Published: {state.get('published_at', 'Not published')}
         Returns:
             Publishing result with post IDs
         """
-        # Initialize state
-        initial_state = init_feed_publisher_state(brand, platform, photo_s3_key)
+        # Start timing
+        start_time = time.time()
+        status = "success"
 
-        # Run graph
-        final_state = await self.run(**initial_state)
+        try:
+            # Initialize state
+            initial_state = init_feed_publisher_state(brand, platform, photo_s3_key)
 
-        # Return result
-        return {
-            "published": final_state.get("published_at") is not None,
-            "facebook_post_id": final_state.get("facebook_post_id"),
-            "instagram_post_id": final_state.get("instagram_post_id"),
-            "caption": final_state.get("caption", ""),
-            "quality_score": final_state.get("caption_quality_score", 0.0),
-            "requires_approval": final_state.get("requires_approval", True),
-            "rejection_reason": final_state.get("rejection_reason"),
-            "duplicate_detected": final_state.get("duplicate_detected", False),
-            "warnings": final_state.get("warnings", []),
-            "steps_completed": final_state.get("steps_completed", [])
-        }
+            # Run graph
+            final_state = await self.run(**initial_state)
+
+            # Build result
+            result = {
+                "published": final_state.get("published_at") is not None,
+                "facebook_post_id": final_state.get("facebook_post_id"),
+                "instagram_post_id": final_state.get("instagram_post_id"),
+                "caption": final_state.get("caption", ""),
+                "quality_score": final_state.get("caption_quality_score", 0.0),
+                "requires_approval": final_state.get("requires_approval", True),
+                "rejection_reason": final_state.get("rejection_reason"),
+                "duplicate_detected": final_state.get("duplicate_detected", False),
+                "warnings": final_state.get("warnings", []),
+                "steps_completed": final_state.get("steps_completed", [])
+            }
+
+            # Determine decision type for metrics
+            if result["rejection_reason"]:
+                decision_type = "reject"
+            elif result["requires_approval"]:
+                decision_type = "human_review"
+            else:
+                decision_type = "auto_publish"
+
+            # Record metrics
+            if METRICS_AVAILABLE:
+                duration = time.time() - start_time
+                record_agent_execution(
+                    agent_name="feed_publisher",
+                    duration_seconds=duration,
+                    status=status,
+                    confidence=result["quality_score"],
+                    decision_type=decision_type
+                )
+
+            return result
+
+        except Exception as e:
+            status = "failure"
+            duration = time.time() - start_time
+
+            # Record failure metrics
+            if METRICS_AVAILABLE:
+                record_agent_execution(
+                    agent_name="feed_publisher",
+                    duration_seconds=duration,
+                    status=status
+                )
+
+            raise

@@ -9,11 +9,19 @@ from typing import Dict, Any, List, Optional
 import logging
 import sys
 import os
+import time
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from temporal_app.monitoring import observe_activity
+
+# Import monitoring metrics
+try:
+    from monitoring.metrics import record_memory_operation, MemoryMetrics
+    METRICS_AVAILABLE = True
+except ImportError:
+    METRICS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +65,10 @@ async def search_memory(
         f"Searching memory: collection={collection}, query_len={len(query)}, top_k={top_k}"
     )
 
+    start_time = time.time()
+    status = "success"
+    cache_hit = False
+
     try:
         manager = await get_memory_manager()
 
@@ -67,15 +79,41 @@ async def search_memory(
             filters=filters
         )
 
+        duration = time.time() - start_time
+
         activity.logger.info(
             f"Memory search complete: found {len(results)} results, "
             f"top_score={results[0]['score']:.2%}" if results else "no results"
         )
 
+        # Record metrics
+        if METRICS_AVAILABLE and results:
+            record_memory_operation(
+                operation="search",
+                collection=collection,
+                duration_seconds=duration,
+                status=status,
+                cache_hit=cache_hit,
+                similarity_score=results[0]["score"] if results else None
+            )
+
         return results
 
     except Exception as e:
+        status = "failure"
+        duration = time.time() - start_time
+
         activity.logger.error(f"Memory search failed: {str(e)}")
+
+        # Record failure metrics
+        if METRICS_AVAILABLE:
+            record_memory_operation(
+                operation="search",
+                collection=collection,
+                duration_seconds=duration,
+                status=status
+            )
+
         # Return empty results instead of failing the activity
         return []
 
@@ -102,6 +140,9 @@ async def save_to_memory(
         f"metadata_keys={list(metadata.keys())}"
     )
 
+    start_time = time.time()
+    status = "success"
+
     try:
         manager = await get_memory_manager()
 
@@ -111,12 +152,36 @@ async def save_to_memory(
             metadata=metadata
         )
 
+        duration = time.time() - start_time
+
         activity.logger.info(f"Saved to memory: doc_id={doc_id}")
+
+        # Record metrics
+        if METRICS_AVAILABLE:
+            record_memory_operation(
+                operation="save",
+                collection=collection,
+                duration_seconds=duration,
+                status=status
+            )
 
         return doc_id
 
     except Exception as e:
+        status = "failure"
+        duration = time.time() - start_time
+
         activity.logger.error(f"Memory save failed: {str(e)}")
+
+        # Record failure metrics
+        if METRICS_AVAILABLE:
+            record_memory_operation(
+                operation="save",
+                collection=collection,
+                duration_seconds=duration,
+                status=status
+            )
+
         raise
 
 

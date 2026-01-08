@@ -1,0 +1,75 @@
+# Prometheus Configuration
+# Scrapes metrics from agent system
+
+global:
+  scrape_interval: 15s  # Scrape targets every 15 seconds
+  evaluation_interval: 15s  # Evaluate rules every 15 seconds
+  external_labels:
+    cluster: 'agent-runner'
+    environment: 'production'
+
+# Alertmanager configuration (optional)
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ['alertmanager:9093']
+
+# Load rules files
+rule_files:
+  - '/etc/prometheus/alert_rules.yml'
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+
+  # Agent worker metrics (when instrumented)
+  - job_name: 'agent-worker'
+    static_configs:
+      - targets: ['agent-worker:8000']  # Assuming metrics on port 8000
+        labels:
+          service: 'agent-worker'
+          component: 'temporal-worker'
+    # Don't fail if worker doesn't expose metrics yet
+    scrape_timeout: 10s
+    metrics_path: '/metrics'
+
+  # Temporal server metrics (if exposed)
+  - job_name: 'temporal'
+    static_configs:
+      - targets: ['temporal:7233']
+        labels:
+          service: 'temporal'
+          component: 'temporal-server'
+    # Optional - Temporal may not expose Prometheus metrics by default
+    scrape_timeout: 10s
+
+  # Qdrant metrics
+  - job_name: 'qdrant'
+    static_configs:
+      - targets: ['qdrant:6333']
+        labels:
+          service: 'qdrant'
+          component: 'vector-db'
+    metrics_path: '/metrics'
+    scrape_timeout: 10s
+
+  # Redis exporter (optional - requires redis-exporter sidecar)
+  # - job_name: 'redis'
+  #   static_configs:
+  #     - targets: ['redis-exporter:9121']
+  #       labels:
+  #         service: 'redis'
+  #         component: 'cache'
+
+  # PostgreSQL exporter (optional - requires postgres-exporter sidecar)
+  # - job_name: 'postgresql'
+  #   static_configs:
+  #     - targets: ['postgres-exporter:9187']
+  #       labels:
+  #         service: 'postgresql'
+  #         component: 'temporal-db'
