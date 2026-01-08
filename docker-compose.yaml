@@ -188,9 +188,7 @@ services:
     volumes:
       - ./logs:/app/logs
 
-    # This service is optional - comment out if not needed
-    profiles:
-      - api
+    # Service now always runs (removed profiles for dashboard access)
 
   # =============================================================================
   # MEMORY LAYER (NEW)
