@@ -32,16 +32,11 @@ from temporal_app.activities.appointment_activities import (
     analyze_appointments,
     save_appointment_report,
 )
-
-# LangGraph integration (conditional)
-ENABLE_LANGGRAPH = os.getenv('ENABLE_LANGGRAPH', 'false').lower() == 'true'
-
-if ENABLE_LANGGRAPH:
-    from temporal_app.workflows.feed_publisher_langgraph import FeedPublisherLangGraphWorkflow
-    from temporal_app.workflows.invoice_matcher_langgraph import InvoiceMatcherLangGraphWorkflow
-    from temporal_app.activities.memory_activities import MEMORY_ACTIVITIES
-    from temporal_app.activities.langgraph_activities import LANGGRAPH_ACTIVITIES
-    logger.info("🧠 LangGraph integration enabled")
+from temporal_app.activities.langgraph_wrapper import (
+    run_langgraph_feed_publisher,
+    check_caption_quality,
+    check_caption_duplicate,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,26 +72,22 @@ async def run_worker():
     ]
 
     activities = [
+        # Core social media activities
         get_random_unused_photo,
         view_image,
         generate_caption,
         publish_facebook_photo,
         publish_instagram_photo,
         save_publication_report,
+        # Appointment activities
         collect_appointments,
         analyze_appointments,
         save_appointment_report,
+        # LangGraph wrapper activities (quality checks, memory)
+        run_langgraph_feed_publisher,
+        check_caption_quality,
+        check_caption_duplicate,
     ]
-
-    # Add LangGraph workflows and activities if enabled
-    if ENABLE_LANGGRAPH:
-        workflows.extend([
-            FeedPublisherLangGraphWorkflow,
-            InvoiceMatcherLangGraphWorkflow,
-        ])
-        activities.extend(MEMORY_ACTIVITIES)
-        activities.extend(LANGGRAPH_ACTIVITIES)
-        logger.info("✅ LangGraph workflows and activities registered")
 
     # Create worker
     worker = Worker(
@@ -124,10 +115,10 @@ async def run_worker():
     logger.info("    - collect_appointments")
     logger.info("    - analyze_appointments")
     logger.info("    - save_appointment_report")
-    if ENABLE_LANGGRAPH:
-        logger.info("  LangGraph activities:")
-        logger.info("    - Memory operations (9 activities)")
-        logger.info("    - Graph execution (2 activities)")
+    logger.info("  LangGraph wrapper activities:")
+    logger.info("    - run_langgraph_feed_publisher")
+    logger.info("    - check_caption_quality")
+    logger.info("    - check_caption_duplicate")
     logger.info("=" * 60)
     logger.info("🎧 Listening for workflow tasks...")
     logger.info("Press Ctrl+C to stop")

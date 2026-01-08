@@ -1,10 +1,16 @@
 """
 Feed Publisher Workflow - Main daily posting workflow.
+
+Supports two modes:
+1. Simple mode (default): Linear workflow with basic caption generation
+2. LangGraph mode: Memory-aware duplicate detection, quality scoring, decision routing
+
+Set use_langgraph=True to enable advanced features.
 """
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from datetime import timedelta
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import logging
 import asyncio
 
@@ -17,6 +23,11 @@ with workflow.unsafe.imports_passed_through():
         publish_facebook_photo,
         publish_instagram_photo,
         save_publication_report,
+    )
+    from temporal_app.activities.langgraph_wrapper import (
+        run_langgraph_feed_publisher,
+        check_caption_quality,
+        check_caption_duplicate,
     )
     from temporal_app.monitoring import observe_workflow
 
@@ -44,17 +55,25 @@ class FeedPublisherWorkflow:
     """
 
     @workflow.run
-    async def run(self, brand: str = "pomandi") -> Dict[str, Any]:
+    async def run(
+        self,
+        brand: str = "pomandi",
+        use_langgraph: bool = False,
+        quality_threshold: float = 0.70
+    ) -> Dict[str, Any]:
         """
         Execute the feed publishing workflow.
 
         Args:
             brand: Brand name (pomandi or costume)
+            use_langgraph: Use LangGraph for quality checking and memory
+            quality_threshold: Minimum quality score to auto-publish (0.0-1.0)
 
         Returns:
             Publication results with status and IDs
         """
-        workflow.logger.info(f"🚀 Starting feed publisher workflow for {brand}")
+        mode = "LangGraph" if use_langgraph else "Simple"
+        workflow.logger.info(f"Starting feed publisher workflow for {brand} (mode={mode})")
 
         # Determine language based on brand
         language = "nl" if brand == "pomandi" else "fr"
@@ -104,10 +123,62 @@ class FeedPublisherWorkflow:
                 ),
             )
 
-            workflow.logger.info(f"✅ Caption generated: {caption[:50]}...")
+            workflow.logger.info(f"Caption generated: {caption[:50]}...")
+
+            # Optional: Quality check with LangGraph
+            quality_score = 1.0
+            quality_passed = True
+            duplicate_detected = False
+
+            if use_langgraph:
+                workflow.logger.info("Step 3.5: Running quality checks (LangGraph)...")
+
+                # Check for duplicates
+                duplicate_result = await workflow.execute_activity(
+                    check_caption_duplicate,
+                    args=[brand, "facebook", caption],
+                    start_to_close_timeout=timedelta(minutes=1),
+                    retry_policy=RetryPolicy(maximum_attempts=2),
+                )
+                duplicate_detected = duplicate_result.get("is_duplicate", False)
+
+                if duplicate_detected:
+                    workflow.logger.warning(
+                        f"Duplicate detected! Similarity: {duplicate_result.get('similarity_score', 0):.2%}"
+                    )
+
+                # Check quality
+                quality_result = await workflow.execute_activity(
+                    check_caption_quality,
+                    args=[caption, brand, language],
+                    start_to_close_timeout=timedelta(minutes=1),
+                    retry_policy=RetryPolicy(maximum_attempts=2),
+                )
+                quality_score = quality_result.get("quality_score", 1.0)
+                quality_passed = quality_score >= quality_threshold
+
+                workflow.logger.info(
+                    f"Quality check: score={quality_score:.2f}, passed={quality_passed}, "
+                    f"warnings={quality_result.get('warnings', [])}"
+                )
+
+                if not quality_passed:
+                    workflow.logger.error(
+                        f"Quality check failed (score={quality_score:.2f} < threshold={quality_threshold})"
+                    )
+                    return {
+                        "success": False,
+                        "brand": brand,
+                        "reason": "quality_check_failed",
+                        "quality_score": quality_score,
+                        "quality_threshold": quality_threshold,
+                        "warnings": quality_result.get("warnings", []),
+                        "workflow_id": workflow.info().workflow_id,
+                        "run_id": workflow.info().run_id,
+                    }
 
             # Step 4 & 5: Publish to both platforms in parallel
-            workflow.logger.info("📱 Step 4-5: Publishing to social media (parallel)...")
+            workflow.logger.info("Step 4-5: Publishing to social media (parallel)...")
 
             # Create both tasks
             facebook_task = workflow.execute_activity(
@@ -167,6 +238,10 @@ class FeedPublisherWorkflow:
                 "published_at": workflow.now().isoformat(),
                 "workflow_id": workflow.info().workflow_id,
                 "run_id": workflow.info().run_id,
+                # LangGraph features
+                "langgraph_enabled": use_langgraph,
+                "quality_score": quality_score,
+                "duplicate_detected": duplicate_detected,
             }
 
             workflow.logger.info("🎉 Feed publisher workflow completed successfully!")
