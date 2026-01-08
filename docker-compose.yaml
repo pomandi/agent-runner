@@ -84,47 +84,31 @@ services:
     container_name: agent-worker
     restart: unless-stopped
     environment:
-      # Run mode
-      RUN_MODE: worker
-
-      # Temporal configuration
-      TEMPORAL_HOST: temporal:7233
-      TEMPORAL_NAMESPACE: default
-      TEMPORAL_TASK_QUEUE: agent-tasks
-
-      # Claude Agent SDK (required for AI activities)
-      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN}
-
-      # Langfuse monitoring (optional)
-      LANGFUSE_HOST: ${LANGFUSE_HOST:-https://langfuse.pomandi.com}
-      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
-      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
-
-      # AWS credentials (for S3 photo access)
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-eu-west-1}
-      AWS_S3_BUCKET: ${AWS_S3_BUCKET:-saleorme}
-
-      # PostgreSQL (for agent-outputs DB)
-      DATABASE_URL: ${DATABASE_URL:-}
-      POSTGRES_HOST: ${POSTGRES_HOST:-}
-      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
-      POSTGRES_DB: ${POSTGRES_DB:-agent_outputs}
-      POSTGRES_USER: ${POSTGRES_USER:-}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
-
-      # Meta API credentials (for social media publishing)
-      # NOTE: These are passed directly from Coolify environment (no interpolation)
-      META_ACCESS_TOKEN_POMANDI:
-      META_PAGE_ID_POMANDI:
-      META_IG_ACCOUNT_ID_POMANDI:
-      META_ACCESS_TOKEN_COSTUME:
-      META_PAGE_ID_COSTUME:
-      META_IG_ACCOUNT_ID_COSTUME:
-
-      # Logging
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      - RUN_MODE=worker
+      - TEMPORAL_HOST=temporal:7233
+      - TEMPORAL_NAMESPACE=default
+      - TEMPORAL_TASK_QUEUE=agent-tasks
+      - CLAUDE_CODE_OAUTH_TOKEN
+      - LANGFUSE_HOST
+      - LANGFUSE_PUBLIC_KEY
+      - LANGFUSE_SECRET_KEY
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_DEFAULT_REGION
+      - AWS_S3_BUCKET
+      - DATABASE_URL
+      - POSTGRES_HOST
+      - POSTGRES_PORT
+      - POSTGRES_DB
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+      - META_ACCESS_TOKEN_POMANDI
+      - META_PAGE_ID_POMANDI
+      - META_IG_ACCOUNT_ID_POMANDI
+      - META_ACCESS_TOKEN_COSTUME
+      - META_PAGE_ID_COSTUME
+      - META_IG_ACCOUNT_ID_COSTUME
+      - LOG_LEVEL
 
     networks:
       - temporal-network
