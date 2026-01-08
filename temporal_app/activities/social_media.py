@@ -2,7 +2,7 @@
 Social media activities - wraps MCP tools as Temporal activities.
 """
 from temporalio import activity
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import logging
 import sys
 import os
@@ -190,7 +190,7 @@ async def generate_caption(
     image_description: str,
     brand: str,
     language: str = "nl",
-    image_url: str = None
+    image_url: Optional[str] = None
 ) -> str:
     """
     Generate social media caption using Claude.
