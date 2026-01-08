@@ -93,16 +93,28 @@ async def get_random_unused_photo(brand: str) -> Dict[str, Any]:
         # Select random photo
         selected_key = random.choice(available_keys)
 
-        # Generate presigned URL
-        url = s3_client.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': bucket, 'Key': selected_key},
-            ExpiresIn=3600
-        )
+        # Generate public URL (without signature - required for Meta APIs)
+        # Meta (Facebook/Instagram) APIs require clean URLs without query params
+        region = os.getenv('AWS_S3_REGION_NAME', 'us-east-1')
+        if region == 'us-east-1':
+            # US East 1 uses different URL format
+            public_url = f"https://{bucket}.s3.amazonaws.com/{selected_key}"
+        else:
+            public_url = f"https://{bucket}.s3.{region}.amazonaws.com/{selected_key}"
+
+        # URL encode the key parts (spaces, special chars)
+        from urllib.parse import quote
+        encoded_key = quote(selected_key, safe='/')
+        if region == 'us-east-1':
+            public_url = f"https://{bucket}.s3.amazonaws.com/{encoded_key}"
+        else:
+            public_url = f"https://{bucket}.s3.{region}.amazonaws.com/{encoded_key}"
+
+        activity.logger.info(f"Generated public URL: {public_url}")
 
         result = {
             "key": selected_key,
-            "url": url,
+            "url": public_url,  # Use public URL instead of presigned
             "brand": brand
         }
 
