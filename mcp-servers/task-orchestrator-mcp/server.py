@@ -464,7 +464,7 @@ async def tool_get_workflow_execution_details(args: Dict[str, Any]) -> str:
     output += "## Summary\n"
     output += f"**Workflow ID:** `{description.id}`\n"
     output += f"**Run ID:** `{description.run_id}`\n"
-    output += f"**Type:** {description.type}\n"
+    output += f"**Type:** {description.workflow_type}\n"
 
     # Status with emoji
     status_emoji_map = {

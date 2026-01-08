@@ -1,0 +1,10 @@
+# Memory MCP Server Dependencies
+mcp>=1.0.0
+structlog>=24.0.0
+
+# Memory layer dependencies (from parent)
+# These should be installed in parent environment:
+# - qdrant-client
+# - openai
+# - redis
+# - tiktoken

@@ -1,0 +1,232 @@
+{
+  "dataset_name": "caption_quality_golden",
+  "version": "1.0",
+  "created_at": "2026-01-08",
+  "description": "Golden dataset for caption quality evaluation",
+  "test_cases": [
+    {
+      "id": "high_quality_nl_001",
+      "brand": "pomandi",
+      "language": "nl",
+      "platform": "facebook",
+      "photo_description": "Navy blue blazer on mannequin",
+      "caption": "✨ Nieuw binnen! Deze stijlvolle navy blazer is perfect voor jouw zakelijke look 💼 Shop nu online! #Pomandi #Fashion #Blazer",
+      "expected_scores": {
+        "overall_quality": 0.95,
+        "language_accuracy": 1.0,
+        "brand_consistency": 1.0,
+        "engagement_potential": 0.9,
+        "length_appropriateness": 1.0
+      },
+      "reasoning": "Excellent Dutch caption with brand mention, emojis, call-to-action, and hashtags",
+      "tags": ["high_quality", "dutch", "complete"]
+    },
+    {
+      "id": "high_quality_fr_001",
+      "brand": "costume",
+      "language": "fr",
+      "platform": "instagram",
+      "photo_description": "Elegant grey suit on display",
+      "caption": "🇫🇷 L'élégance française à son meilleur! Notre costume gris signature incarne le raffinement parfait ✨ #Costume #ModeFrançaise #Élégance",
+      "expected_scores": {
+        "overall_quality": 0.98,
+        "language_accuracy": 1.0,
+        "brand_consistency": 1.0,
+        "engagement_potential": 0.95,
+        "length_appropriateness": 1.0
+      },
+      "reasoning": "Perfect French caption with sophisticated tone matching Costume brand voice",
+      "tags": ["high_quality", "french", "elegant"]
+    },
+    {
+      "id": "wrong_language_001",
+      "brand": "pomandi",
+      "language": "nl",
+      "platform": "facebook",
+      "photo_description": "Red dress on hanger",
+      "caption": "Beautiful new red dress available now! Perfect for your style 🌟 #Fashion",
+      "expected_scores": {
+        "overall_quality": 0.20,
+        "language_accuracy": 0.0,
+        "brand_consistency": 0.0,
+        "engagement_potential": 0.5,
+        "length_appropriateness": 1.0
+      },
+      "reasoning": "English caption for Dutch brand - critical error",
+      "tags": ["wrong_language", "critical_failure"]
+    },
+    {
+      "id": "no_brand_mention_001",
+      "brand": "pomandi",
+      "language": "nl",
+      "platform": "instagram",
+      "photo_description": "White sneakers",
+      "caption": "Nieuwe witte sneakers! 👟 Perfect voor casual dagen ✨ #Fashion #Schoenen",
+      "expected_scores": {
+        "overall_quality": 0.70,
+        "language_accuracy": 1.0,
+        "brand_consistency": 0.3,
+        "engagement_potential": 0.8,
+        "length_appropriateness": 1.0
+      },
+      "reasoning": "Good Dutch caption but missing brand name - reduces quality",
+      "tags": ["missing_brand", "medium_quality"]
+    },
+    {
+      "id": "too_short_001",
+      "brand": "costume",
+      "language": "fr",
+      "platform": "facebook",
+      "photo_description": "Black tie",
+      "caption": "Nouveau! 🎩",
+      "expected_scores": {
+        "overall_quality": 0.40,
+        "language_accuracy": 1.0,
+        "brand_consistency": 0.0,
+        "engagement_potential": 0.2,
+        "length_appropriateness": 0.0
+      },
+      "reasoning": "Too short, no context, no brand mention",
+      "tags": ["too_short", "low_quality"]
+    },
+    {
+      "id": "too_long_001",
+      "brand": "pomandi",
+      "language": "nl",
+      "platform": "instagram",
+      "photo_description": "Summer collection display",
+      "caption": "✨ Ontdek onze gloednieuwe zomercollectie bij Pomandi! We hebben prachtige jurken, stijlvolle broeken, elegante blazers en nog veel meer te bieden. Deze collectie is speciaal ontworpen voor de moderne vrouw die waarde hecht aan kwaliteit en stijl. Shop nu online of bezoek onze winkel voor persoonlijk advies van ons deskundig team. #Pomandi #Zomercollectie #Fashion #Style #Netherlands #Shopping #NewArrivals #SummerFashion",
+      "expected_scores": {
+        "overall_quality": 0.60,
+        "language_accuracy": 1.0,
+        "brand_consistency": 1.0,
+        "engagement_potential": 0.5,
+        "length_appropriateness": 0.3
+      },
+      "reasoning": "Too long for social media, will get truncated, too many hashtags",
+      "tags": ["too_long", "verbose"]
+    },
+    {
+      "id": "no_emojis_001",
+      "brand": "pomandi",
+      "language": "nl",
+      "platform": "facebook",
+      "photo_description": "Green jacket",
+      "caption": "Nieuw binnen! Groene jas voor de herfst bij Pomandi. Shop nu online. #Fashion",
+      "expected_scores": {
+        "overall_quality": 0.75,
+        "language_accuracy": 1.0,
+        "brand_consistency": 1.0,
+        "engagement_potential": 0.6,
+        "length_appropriateness": 1.0
+      },
+      "reasoning": "Correct but lacks emojis which reduce engagement",
+      "tags": ["no_emojis", "dry"]
+    },
+    {
+      "id": "good_cta_001",
+      "brand": "costume",
+      "language": "fr",
+      "platform": "instagram",
+      "photo_description": "Wedding suit collection",
+      "caption": "💍 Votre mariage approche? Découvrez notre collection Costume pour un jour inoubliable! ✨ Réservez votre essayage → lien en bio 🇫🇷 #Costume #Mariage",
+      "expected_scores": {
+        "overall_quality": 0.97,
+        "language_accuracy": 1.0,
+        "brand_consistency": 1.0,
+        "engagement_potential": 0.95,
+        "length_appropriateness": 1.0
+      },
+      "reasoning": "Excellent call-to-action, relevant context, perfect French",
+      "tags": ["excellent_cta", "high_quality"]
+    },
+    {
+      "id": "duplicate_similar_001",
+      "brand": "pomandi",
+      "language": "nl",
+      "platform": "facebook",
+      "photo_description": "Blue jeans",
+      "caption": "✨ Nieuw binnen! Deze stijlvolle blauwe jeans is perfect voor jouw casual look 👖 Shop nu online! #Pomandi #Fashion #Jeans",
+      "similar_recent_caption": "✨ Nieuw binnen! Deze stijlvolle navy blazer is perfect voor jouw zakelijke look 💼 Shop nu online! #Pomandi #Fashion #Blazer",
+      "expected_scores": {
+        "overall_quality": 0.65,
+        "language_accuracy": 1.0,
+        "brand_consistency": 1.0,
+        "engagement_potential": 0.7,
+        "length_appropriateness": 1.0,
+        "originality": 0.3
+      },
+      "reasoning": "High quality but too similar to recent post - lacks originality",
+      "tags": ["duplicate_template", "low_originality"]
+    },
+    {
+      "id": "seasonal_relevance_001",
+      "brand": "pomandi",
+      "language": "nl",
+      "platform": "instagram",
+      "photo_description": "Winter coat",
+      "caption": "❄️ Klaar voor de winter? Deze warme jas van Pomandi houdt je stijlvol én warm! 🧥 Perfect voor de koude dagen ✨ #Pomandi #Winter #Fashion",
+      "expected_scores": {
+        "overall_quality": 0.93,
+        "language_accuracy": 1.0,
+        "brand_consistency": 1.0,
+        "engagement_potential": 0.9,
+        "length_appropriateness": 1.0,
+        "seasonal_relevance": 1.0
+      },
+      "reasoning": "Excellent seasonal relevance, engaging, on-brand",
+      "tags": ["seasonal", "high_quality"]
+    },
+    {
+      "id": "mixed_language_error_001",
+      "brand": "costume",
+      "language": "fr",
+      "platform": "facebook",
+      "photo_description": "Brown shoes",
+      "caption": "Nouveau shoes en cuir! Perfect voor elegante looks 🇫🇷 #Costume #Fashion",
+      "expected_scores": {
+        "overall_quality": 0.25,
+        "language_accuracy": 0.2,
+        "brand_consistency": 0.8,
+        "engagement_potential": 0.4,
+        "length_appropriateness": 1.0
+      },
+      "reasoning": "Mixed French/English/Dutch - language consistency error",
+      "tags": ["mixed_language", "critical_error"]
+    },
+    {
+      "id": "excessive_hashtags_001",
+      "brand": "pomandi",
+      "language": "nl",
+      "platform": "instagram",
+      "photo_description": "Summer dress",
+      "caption": "Zomerjurk bij Pomandi! ☀️ #Fashion #Style #Netherlands #Amsterdam #Shopping #Dress #Summer #Clothes #WomenFashion #Online #Sale #New #Trending #Outfit #OOTD #InstaFashion #FashionBlogger #StyleInspo",
+      "expected_scores": {
+        "overall_quality": 0.55,
+        "language_accuracy": 1.0,
+        "brand_consistency": 1.0,
+        "engagement_potential": 0.3,
+        "length_appropriateness": 0.8,
+        "hashtag_quality": 0.2
+      },
+      "reasoning": "Way too many hashtags - looks spammy",
+      "tags": ["excessive_hashtags", "spammy"]
+    }
+  ],
+  "statistics": {
+    "total_cases": 12,
+    "quality_distribution": {
+      "high_quality": 4,
+      "medium_quality": 4,
+      "low_quality": 4
+    },
+    "languages": {
+      "nl": 8,
+      "fr": 4
+    },
+    "brands": {
+      "pomandi": 8,
+      "costume": 4
+    }
+  }
+}
