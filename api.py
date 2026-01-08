@@ -11,11 +11,14 @@ from datetime import datetime
 from typing import Optional, List
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import uvicorn
 
 from sdk_runner import run_agent
 from agents import list_agents, get_agent_info
+from actor_status import get_all_actors_status, get_actor_checker
 
 # Import monitoring client
 try:
@@ -44,6 +47,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ============================================================
+# Static Files - Dashboard
+# ============================================================
+
+# Mount dashboard static files if they exist
+DASHBOARD_DIR = os.path.join(os.path.dirname(__file__), "dashboard", "dist")
+if os.path.exists(DASHBOARD_DIR):
+    app.mount("/dashboard/assets", StaticFiles(directory=os.path.join(DASHBOARD_DIR, "assets")), name="dashboard-assets")
+    logger.info(f"Dashboard mounted from {DASHBOARD_DIR}")
+
+    @app.get("/dashboard")
+    @app.get("/dashboard/")
+    async def serve_dashboard():
+        """Serve the animated actor dashboard."""
+        return FileResponse(os.path.join(DASHBOARD_DIR, "index.html"))
+else:
+    logger.warning(f"Dashboard not found at {DASHBOARD_DIR}. Build with 'npm run build' in dashboard/")
 
 
 # ============================================================
@@ -343,6 +364,59 @@ Return ONLY the JSON object, no markdown, no explanation.
             reasoning="Internal server error",
             error=str(e)
         )
+
+
+# ============================================================
+# Actor Status Endpoints (Animated Dashboard)
+# ============================================================
+
+@app.get("/api/actors/status")
+async def get_actors_status():
+    """
+    Get status and recent activity for all 8 system actors.
+    Used by the animated monitoring dashboard.
+    """
+    try:
+        status = await get_all_actors_status()
+        return status
+    except Exception as e:
+        logger.error(f"Actor status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/actors/{actor_name}/activity")
+async def get_actor_activity(actor_name: str):
+    """
+    Get detailed activity for a specific actor.
+    """
+    try:
+        checker = get_actor_checker()
+        all_status = await checker.get_all_status()
+
+        for actor in all_status.get("actors", []):
+            if actor.get("name") == actor_name:
+                return actor
+
+        raise HTTPException(status_code=404, detail=f"Actor '{actor_name}' not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Actor activity error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/actors/{actor_name}/activity")
+async def update_actor_activity(actor_name: str, action: str, detail: str):
+    """
+    Update activity for a specific actor (used by workflows).
+    """
+    try:
+        checker = get_actor_checker()
+        checker.update_activity(actor_name, action, detail)
+        return {"success": True, "actor": actor_name}
+    except Exception as e:
+        logger.error(f"Update activity error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================

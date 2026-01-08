@@ -5,10 +5,20 @@
 # - sdk_runner.py: SDK execution with query() or ClaudeSDKClient
 # - hooks.py: Pre/Post tool hooks
 # - tools/: Custom Python tools with @tool decorator
+# - dashboard/: Animated actor monitoring dashboard (React)
 #
 # Usage:
 #   docker run -e CLAUDE_CODE_OAUTH_TOKEN=xxx -e AGENT_NAME=feed-publisher agent-runner
 
+# Stage 1: Build dashboard
+FROM node:20-alpine AS dashboard-builder
+WORKDIR /dashboard
+COPY dashboard/package.json dashboard/vite.config.js ./
+RUN npm install
+COPY dashboard/ ./
+RUN npm run build
+
+# Stage 2: Python runtime
 FROM python:3.12-slim
 
 # Install system dependencies
@@ -50,6 +60,12 @@ COPY --chown=agent:agent langgraph_agents/ /app/langgraph_agents/
 
 # Copy MCP servers if they exist
 COPY --chown=agent:agent mcp-servers/ /app/mcp-servers/
+
+# Copy actor status module
+COPY --chown=agent:agent actor_status.py /app/actor_status.py
+
+# Copy built dashboard from builder stage
+COPY --from=dashboard-builder --chown=agent:agent /dashboard/dist /app/dashboard/dist
 
 # Make scripts executable
 RUN chmod +x /app/entrypoint.sh /app/sdk_runner.py && \
