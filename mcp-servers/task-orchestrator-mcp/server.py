@@ -44,7 +44,10 @@ from langfuse_module import (
 # Import temporal functions from existing temporal-mcp
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'temporal-mcp'))
 from temporalio.client import Client as TemporalClient
-from temporalio.client import Schedule, ScheduleActionStartWorkflow, ScheduleSpec, ScheduleState
+from temporalio.client import Schedule, ScheduleActionStartWorkflow, ScheduleSpec, ScheduleState, WorkflowHistoryEventFilterType
+from temporalio.api.history.v1 import HistoryEvent
+from temporalio.api.enums.v1 import EventType
+from temporalio.service import RPCError
 from datetime import timedelta, datetime
 
 # Import storage functions from existing agent-outputs-mcp
@@ -261,6 +264,272 @@ async def tool_unpause_schedule(args: Dict[str, Any]) -> str:
     await handle.unpause(note=note)
 
     return f"✅ Schedule **{schedule_id}** unpaused\n\nNote: {note}"
+
+
+def format_history_event(event: HistoryEvent) -> str:
+    """Format a single history event for display."""
+    try:
+        event_type_name = EventType.Name(event.event_type)
+        # Remove EVENT_TYPE_ prefix for readability
+        event_type_display = event_type_name.replace("EVENT_TYPE_", "")
+    except:
+        event_type_display = f"UNKNOWN_EVENT_TYPE_{event.event_type}"
+
+    output = f"**[{event.event_id}]** {event_type_display}\n"
+    output += f"  Time: {event.event_time}\n"
+
+    # Add type-specific details
+    try:
+        if event.event_type == 1:  # WORKFLOW_EXECUTION_STARTED
+            if hasattr(event, 'workflow_execution_started_event_attributes'):
+                attrs = event.workflow_execution_started_event_attributes
+                if hasattr(attrs, 'task_queue') and attrs.task_queue:
+                    output += f"  Task Queue: {attrs.task_queue.name}\n"
+
+        elif event.event_type == 2:  # WORKFLOW_EXECUTION_COMPLETED
+            if hasattr(event, 'workflow_execution_completed_event_attributes'):
+                attrs = event.workflow_execution_completed_event_attributes
+                if hasattr(attrs, 'result') and attrs.result:
+                    result_str = str(attrs.result)[:200]
+                    output += f"  Result: {result_str}\n"
+
+        elif event.event_type == 3:  # WORKFLOW_EXECUTION_FAILED
+            if hasattr(event, 'workflow_execution_failed_event_attributes'):
+                attrs = event.workflow_execution_failed_event_attributes
+                if hasattr(attrs, 'failure') and attrs.failure:
+                    output += f"  ❌ Failure: {attrs.failure.message if hasattr(attrs.failure, 'message') else 'Unknown'}\n"
+
+        elif event.event_type == 4:  # WORKFLOW_EXECUTION_TIMED_OUT
+            if hasattr(event, 'workflow_execution_timed_out_event_attributes'):
+                output += f"  ⏱️ Workflow timed out\n"
+
+        elif event.event_type == 9:  # WORKFLOW_TASK_FAILED
+            if hasattr(event, 'workflow_task_failed_event_attributes'):
+                attrs = event.workflow_task_failed_event_attributes
+                if hasattr(attrs, 'cause'):
+                    output += f"  ❌ Cause: {attrs.cause}\n"
+                if hasattr(attrs, 'failure') and attrs.failure and hasattr(attrs.failure, 'message'):
+                    output += f"  Failure: {attrs.failure.message}\n"
+
+        elif event.event_type == 10:  # ACTIVITY_TASK_SCHEDULED
+            if hasattr(event, 'activity_task_scheduled_event_attributes'):
+                attrs = event.activity_task_scheduled_event_attributes
+                if hasattr(attrs, 'activity_type') and attrs.activity_type:
+                    output += f"  Activity: {attrs.activity_type.name}\n"
+                if hasattr(attrs, 'task_queue') and attrs.task_queue:
+                    output += f"  Task Queue: {attrs.task_queue.name}\n"
+
+        elif event.event_type == 11:  # ACTIVITY_TASK_STARTED
+            if hasattr(event, 'activity_task_started_event_attributes'):
+                attrs = event.activity_task_started_event_attributes
+                if hasattr(attrs, 'attempt'):
+                    output += f"  Attempt: {attrs.attempt}\n"
+
+        elif event.event_type == 12:  # ACTIVITY_TASK_COMPLETED
+            if hasattr(event, 'activity_task_completed_event_attributes'):
+                attrs = event.activity_task_completed_event_attributes
+                if hasattr(attrs, 'result') and attrs.result:
+                    result_str = str(attrs.result)[:200]
+                    output += f"  Result: {result_str}\n"
+
+        elif event.event_type == 13:  # ACTIVITY_TASK_FAILED
+            if hasattr(event, 'activity_task_failed_event_attributes'):
+                attrs = event.activity_task_failed_event_attributes
+                if hasattr(attrs, 'failure') and attrs.failure and hasattr(attrs.failure, 'message'):
+                    output += f"  ❌ Failure: {attrs.failure.message}\n"
+                if hasattr(attrs, 'retry_state'):
+                    output += f"  Retry State: {attrs.retry_state}\n"
+
+        elif event.event_type == 14:  # ACTIVITY_TASK_TIMED_OUT
+            if hasattr(event, 'activity_task_timed_out_event_attributes'):
+                attrs = event.activity_task_timed_out_event_attributes
+                if hasattr(attrs, 'failure') and attrs.failure and hasattr(attrs.failure, 'message'):
+                    output += f"  ⏱️ Timeout: {attrs.failure.message}\n"
+                if hasattr(attrs, 'retry_state'):
+                    output += f"  Retry State: {attrs.retry_state}\n"
+
+        elif event.event_type == 15:  # TIMER_STARTED
+            if hasattr(event, 'timer_started_event_attributes'):
+                attrs = event.timer_started_event_attributes
+                if hasattr(attrs, 'start_to_fire_timeout'):
+                    output += f"  Duration: {attrs.start_to_fire_timeout}\n"
+
+        elif event.event_type == 16:  # TIMER_FIRED
+            if hasattr(event, 'timer_fired_event_attributes'):
+                output += f"  Timer completed\n"
+
+    except Exception as e:
+        output += f"  (Could not parse event details: {str(e)})\n"
+
+    return output
+
+
+def format_failure_event(event: HistoryEvent) -> str:
+    """Format failure event with detailed error information."""
+    try:
+        event_type_name = EventType.Name(event.event_type).replace("EVENT_TYPE_", "")
+    except:
+        event_type_name = f"UNKNOWN_{event.event_type}"
+
+    output = f"### {event_type_name} (Event #{event.event_id})\n"
+    output += f"**Time:** {event.event_time}\n"
+
+    # Get failure details based on event type
+    failure = None
+    try:
+        if event.event_type == 3:  # WORKFLOW_EXECUTION_FAILED
+            if hasattr(event, 'workflow_execution_failed_event_attributes'):
+                attrs = event.workflow_execution_failed_event_attributes
+                if hasattr(attrs, 'failure'):
+                    failure = attrs.failure
+
+        elif event.event_type == 9:  # WORKFLOW_TASK_FAILED
+            if hasattr(event, 'workflow_task_failed_event_attributes'):
+                attrs = event.workflow_task_failed_event_attributes
+                if hasattr(attrs, 'failure'):
+                    failure = attrs.failure
+                if hasattr(attrs, 'cause'):
+                    output += f"**Cause:** {attrs.cause}\n"
+
+        elif event.event_type == 13:  # ACTIVITY_TASK_FAILED
+            if hasattr(event, 'activity_task_failed_event_attributes'):
+                attrs = event.activity_task_failed_event_attributes
+                if hasattr(attrs, 'failure'):
+                    failure = attrs.failure
+                if hasattr(attrs, 'retry_state'):
+                    output += f"**Retry State:** {attrs.retry_state}\n"
+
+        elif event.event_type == 14:  # ACTIVITY_TASK_TIMED_OUT
+            if hasattr(event, 'activity_task_timed_out_event_attributes'):
+                attrs = event.activity_task_timed_out_event_attributes
+                if hasattr(attrs, 'failure'):
+                    failure = attrs.failure
+                if hasattr(attrs, 'retry_state'):
+                    output += f"**Retry State:** {attrs.retry_state}\n"
+
+        if failure:
+            if hasattr(failure, 'message'):
+                output += f"**Error Message:** {failure.message}\n"
+
+            if hasattr(failure, 'stack_trace') and failure.stack_trace:
+                stack_trace = failure.stack_trace
+                if len(stack_trace) > 2000:
+                    stack_trace = stack_trace[:2000] + "\n... (truncated)"
+                output += f"**Stack Trace:**\n```\n{stack_trace}\n```\n"
+
+            if hasattr(failure, 'cause') and failure.cause:
+                output += f"**Cause:** {failure.cause}\n"
+
+    except Exception as e:
+        output += f"(Could not parse failure details: {str(e)})\n"
+
+    return output
+
+
+async def tool_get_workflow_execution_details(args: Dict[str, Any]) -> str:
+    """
+    Get comprehensive workflow execution details including full event history.
+
+    Args:
+        workflow_id: The workflow ID to query
+        run_id: Specific run ID (optional, defaults to latest)
+        include_full_history: Include complete event timeline (default: True)
+    """
+    workflow_id = args.get('workflow_id')
+    run_id = args.get('run_id')
+    include_full_history = args.get('include_full_history', True)
+
+    # Validation
+    if not workflow_id:
+        return "❌ Error: workflow_id parameter is required\n\nUsage: get_workflow_execution_details(workflow_id='your-workflow-id')"
+
+    # Get workflow handle
+    try:
+        client = await get_temporal_client()
+        handle = client.get_workflow_handle(workflow_id, run_id=run_id)
+        description = await handle.describe()
+    except RPCError as e:
+        error_str = str(e).lower()
+        if "not found" in error_str:
+            return f"❌ Workflow not found: {workflow_id}\n\nThis workflow does not exist or may have been deleted."
+        elif run_id and "run" in error_str:
+            return f"❌ Invalid run ID: {run_id}\n\nRun ID not found for workflow {workflow_id}"
+        else:
+            return f"❌ Failed to query workflow: {str(e)}"
+    except Exception as e:
+        return f"❌ Failed to connect or query workflow: {str(e)}\n\nCheck Temporal server at {TEMPORAL_HOST}"
+
+    # Build output - Section 1: Summary
+    output = "🔍 **Workflow Execution Details**\n\n"
+    output += "## Summary\n"
+    output += f"**Workflow ID:** `{description.id}`\n"
+    output += f"**Run ID:** `{description.run_id}`\n"
+    output += f"**Type:** {description.type}\n"
+
+    # Status with emoji
+    status_emoji_map = {
+        "RUNNING": "🏃",
+        "COMPLETED": "✅",
+        "FAILED": "❌",
+        "CANCELED": "⛔",
+        "CANCELLED": "⛔",
+        "TERMINATED": "🛑",
+        "TIMED_OUT": "⏱️",
+        "CONTINUED_AS_NEW": "🔄"
+    }
+
+    status_name = description.status.name if hasattr(description.status, 'name') else str(description.status)
+    status_emoji = status_emoji_map.get(status_name, "❓")
+
+    output += f"**Status:** {status_emoji} {status_name}\n"
+    output += f"**Start Time:** {description.start_time}\n"
+
+    if description.close_time:
+        duration = (description.close_time - description.start_time).total_seconds()
+        output += f"**End Time:** {description.close_time}\n"
+        output += f"**Duration:** {duration:.2f}s\n"
+    else:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        running_time = (now - description.start_time).total_seconds()
+        output += f"**Running Time:** {running_time:.2f}s\n"
+
+    output += f"**History Length:** {description.history_length} events\n"
+    output += "\n"
+
+    # Fetch history if requested
+    events = []
+    if include_full_history:
+        try:
+            history = await handle.fetch_history(
+                event_filter_type=WorkflowHistoryEventFilterType.ALL_EVENT
+            )
+            events = list(history.events)
+
+            # Warn if history is large
+            if len(events) > 500:
+                output += f"⚠️ Large history detected ({len(events)} events). Showing all events.\n\n"
+        except Exception as e:
+            output += f"\n⚠️ Could not fetch full history: {str(e)}\n"
+            output += "Showing workflow summary only.\n\n"
+
+    # Build output - Section 2: Event Timeline
+    if events:
+        output += "## Event Timeline\n\n"
+        for event in events:
+            output += format_history_event(event)
+            output += "\n"
+
+    # Build output - Section 3: Error Analysis
+    failures = [e for e in events if e.event_type in [3, 9, 13, 14]]
+    if failures:
+        output += "## ⚠️ Error Analysis\n\n"
+        output += f"Found {len(failures)} failure event(s)\n\n"
+        for failure_event in failures:
+            output += format_failure_event(failure_event)
+            output += "\n"
+
+    return output
 
 
 # ============================================================================
@@ -483,6 +752,28 @@ async def list_tools() -> list[Tool]:
                 "required": ["schedule_id"]
             }
         ),
+        Tool(
+            name="get_workflow_execution_details",
+            description="Get comprehensive workflow execution details including full event history (like Temporal UI)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "workflow_id": {
+                        "type": "string",
+                        "description": "Workflow ID to query"
+                    },
+                    "run_id": {
+                        "type": "string",
+                        "description": "Specific run ID (optional, defaults to latest run)"
+                    },
+                    "include_full_history": {
+                        "type": "boolean",
+                        "description": "Include complete event timeline (default: true)"
+                    }
+                },
+                "required": ["workflow_id"]
+            }
+        ),
 
         # STORAGE - Task Outputs
         Tool(
@@ -578,6 +869,8 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             result = await tool_pause_schedule(args)
         elif name == "unpause_schedule":
             result = await tool_unpause_schedule(args)
+        elif name == "get_workflow_execution_details":
+            result = await tool_get_workflow_execution_details(args)
 
         # STORAGE tools
         elif name == "save_output":
