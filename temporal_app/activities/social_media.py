@@ -191,6 +191,7 @@ Provide a concise, marketing-focused description (2-3 sentences)."""
         }
 
 @activity.defn
+@observe_activity
 async def generate_caption(
     image_description: str,
     brand: str,

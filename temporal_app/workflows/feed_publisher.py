@@ -23,6 +23,7 @@ with workflow.unsafe.imports_passed_through():
 logger = logging.getLogger(__name__)
 
 @workflow.defn
+@observe_workflow
 class FeedPublisherWorkflow:
     """
     Daily social media post publisher workflow.
