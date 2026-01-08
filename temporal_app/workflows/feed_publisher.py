@@ -95,7 +95,8 @@ class FeedPublisherWorkflow:
             workflow.logger.info("✍️  Step 3: Generating caption with AI...")
             caption = await workflow.execute_activity(
                 generate_caption,
-                args=[image_description, brand, language, image_url],
+                args=[image_description, brand, language],
+                kwargs={"image_url": image_url},
                 start_to_close_timeout=timedelta(minutes=3),
                 retry_policy=RetryPolicy(
                     maximum_attempts=2,  # AI calls can be expensive, limit retries
