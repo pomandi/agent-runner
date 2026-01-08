@@ -378,7 +378,7 @@ async def publish_facebook_photo(
                 raise ValueError(f"Page ID {config['page_id']} not found in accessible pages")
 
             # Step 2: Publish to Facebook Page using page access token
-            activity.logger.info("Publishing photo to Facebook...")
+            activity.logger.info(f"Publishing photo to Facebook: {image_url[:100]}...")
             response = await client.post(
                 f"https://graph.facebook.com/v21.0/{config['page_id']}/photos",
                 data={
@@ -388,6 +388,10 @@ async def publish_facebook_photo(
                 }
             )
 
+            # Log error details before raising
+            if response.status_code != 200:
+                error_body = response.text
+                activity.logger.error(f"Facebook API error {response.status_code}: {error_body}")
             response.raise_for_status()
             data = response.json()
 
