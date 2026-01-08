@@ -7,10 +7,9 @@ import logging
 import sys
 from temporalio.client import Client
 from temporalio.worker import Worker
-from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Environment variables will be read from system environment (Coolify injection)
+# No need for load_dotenv() - os.getenv() reads from container environment
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
