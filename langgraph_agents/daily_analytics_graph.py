@@ -583,7 +583,7 @@ class DailyAnalyticsGraph(BaseAgentGraph):
             logger.info("Fetching GA4 data", days=days)
 
             # Call MCP tool directly
-            result = await self._call_mcp_tool("analytics", "get_report", {"days": days})
+            result = await self._call_mcp_tool("analytics", "get_traffic_overview", {"days": days})
 
             # Build consolidated data
             data = {
@@ -624,7 +624,7 @@ class DailyAnalyticsGraph(BaseAgentGraph):
             logger.info("Fetching Search Console data", days=days)
 
             # Call MCP tool directly
-            result = await self._call_mcp_tool("search-console", "get_performance", {"days": days})
+            result = await self._call_mcp_tool("search-console", "get_search_analytics", {"days": days})
 
             # Build consolidated data
             data = {
