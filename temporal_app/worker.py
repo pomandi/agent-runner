@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 # Import workflows
 from temporal_app.workflows.feed_publisher import FeedPublisherWorkflow
 from temporal_app.workflows.appointment_collector import AppointmentCollectorWorkflow
+from temporal_app.workflows.daily_analytics import DailyAnalyticsWorkflow, WeeklyAnalyticsWorkflow
 
 # Import activities
 from temporal_app.activities.social_media import (
@@ -36,6 +37,9 @@ from temporal_app.activities.langgraph_wrapper import (
     run_langgraph_feed_publisher,
     check_caption_quality,
     check_caption_duplicate,
+)
+from temporal_app.activities.langgraph_activities import (
+    run_daily_analytics_graph,
 )
 
 logging.basicConfig(
@@ -69,6 +73,8 @@ async def run_worker():
     workflows = [
         FeedPublisherWorkflow,
         AppointmentCollectorWorkflow,
+        DailyAnalyticsWorkflow,
+        WeeklyAnalyticsWorkflow,
     ]
 
     activities = [
@@ -87,6 +93,8 @@ async def run_worker():
         run_langgraph_feed_publisher,
         check_caption_quality,
         check_caption_duplicate,
+        # LangGraph activities (full graph execution)
+        run_daily_analytics_graph,
     ]
 
     # Create worker
@@ -119,6 +127,8 @@ async def run_worker():
     logger.info("    - run_langgraph_feed_publisher")
     logger.info("    - check_caption_quality")
     logger.info("    - check_caption_duplicate")
+    logger.info("  LangGraph activities:")
+    logger.info("    - run_daily_analytics_graph")
     logger.info("=" * 60)
     logger.info("🎧 Listening for workflow tasks...")
     logger.info("Press Ctrl+C to stop")

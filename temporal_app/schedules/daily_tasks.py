@@ -29,6 +29,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from temporal_app.workflows.feed_publisher import FeedPublisherWorkflow
+from temporal_app.workflows.daily_analytics import DailyAnalyticsWorkflow, WeeklyAnalyticsWorkflow
 
 logging.basicConfig(
     level=logging.INFO,
@@ -137,6 +138,84 @@ async def setup_schedules():
             logger.info(f"⚠️  Schedule '{schedule_id_costume}' already exists, skipping")
         else:
             logger.error(f"❌ Failed to create schedule '{schedule_id_costume}': {e}")
+            raise
+
+    # Schedule 3: Daily Analytics Report (08:00 UTC = 10:00 Amsterdam)
+    schedule_id_analytics = "daily-analytics-report"
+
+    logger.info(f"\n📊 Creating schedule: {schedule_id_analytics}")
+    logger.info("   Report at: 08:00 UTC (10:00 Amsterdam)")
+
+    try:
+        await client.create_schedule(
+            id=schedule_id_analytics,
+            schedule=Schedule(
+                action=ScheduleActionStartWorkflow(
+                    workflow=DailyAnalyticsWorkflow.run,
+                    args=[7, "pomandi"],  # Last 7 days, pomandi brand
+                    id="daily-analytics-pomandi",
+                    task_queue=task_queue,
+                    execution_timeout=timedelta(minutes=30),
+                    run_timeout=timedelta(minutes=30),
+                ),
+                spec=ScheduleSpec(
+                    cron_expressions=["0 8 * * *"],  # 08:00 UTC daily
+                ),
+                state=ScheduleState(
+                    note="Daily analytics report - 8 sources, Turkish report to Telegram",
+                    paused=False,
+                ),
+                policy=SchedulePolicy(
+                    overlap=ScheduleOverlapPolicy.SKIP,
+                    catchup_window=timedelta(minutes=30),  # Longer window for reports
+                ),
+            ),
+        )
+        logger.info(f"✅ Schedule '{schedule_id_analytics}' created successfully")
+    except Exception as e:
+        if "already exists" in str(e).lower():
+            logger.info(f"⚠️  Schedule '{schedule_id_analytics}' already exists, skipping")
+        else:
+            logger.error(f"❌ Failed to create schedule '{schedule_id_analytics}': {e}")
+            raise
+
+    # Schedule 4: Weekly Analytics Report (Monday 08:00 UTC)
+    schedule_id_weekly = "weekly-analytics-report"
+
+    logger.info(f"\n📊 Creating schedule: {schedule_id_weekly}")
+    logger.info("   Report at: Monday 08:00 UTC")
+
+    try:
+        await client.create_schedule(
+            id=schedule_id_weekly,
+            schedule=Schedule(
+                action=ScheduleActionStartWorkflow(
+                    workflow=WeeklyAnalyticsWorkflow.run,
+                    args=["pomandi"],  # Pomandi brand
+                    id="weekly-analytics-pomandi",
+                    task_queue=task_queue,
+                    execution_timeout=timedelta(minutes=45),
+                    run_timeout=timedelta(minutes=45),
+                ),
+                spec=ScheduleSpec(
+                    cron_expressions=["0 8 * * 1"],  # 08:00 UTC every Monday
+                ),
+                state=ScheduleState(
+                    note="Weekly comprehensive analytics report (14 days)",
+                    paused=False,
+                ),
+                policy=SchedulePolicy(
+                    overlap=ScheduleOverlapPolicy.SKIP,
+                    catchup_window=timedelta(hours=2),
+                ),
+            ),
+        )
+        logger.info(f"✅ Schedule '{schedule_id_weekly}' created successfully")
+    except Exception as e:
+        if "already exists" in str(e).lower():
+            logger.info(f"⚠️  Schedule '{schedule_id_weekly}' already exists, skipping")
+        else:
+            logger.error(f"❌ Failed to create schedule '{schedule_id_weekly}': {e}")
             raise
 
     # List all schedules to verify

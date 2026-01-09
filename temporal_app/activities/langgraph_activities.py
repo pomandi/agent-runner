@@ -177,8 +177,87 @@ async def run_feed_publisher_graph(
         raise
 
 
+@activity.defn
+async def run_daily_analytics_graph(
+    days: int = 7,
+    brand: str = "pomandi"
+) -> Dict[str, Any]:
+    """
+    Run daily analytics LangGraph workflow.
+
+    Collects data from 8 sources, analyzes with Claude,
+    generates Turkish report, sends to Telegram.
+
+    Args:
+        days: Number of days to analyze
+        brand: Brand name ("pomandi" or "costume")
+
+    Returns:
+        Report result with markdown, insights, delivery status
+    """
+    activity.logger.info(
+        f"Running daily analytics graph: brand={brand}, days={days}"
+    )
+
+    start_time = time.time()
+    status = "completed"
+
+    try:
+        from langgraph_agents import DailyAnalyticsGraph
+
+        # Create and run graph
+        graph = DailyAnalyticsGraph()
+        await graph.initialize()
+
+        result = await graph.generate_report(days=days, brand=brand)
+
+        duration = time.time() - start_time
+
+        activity.logger.info(
+            f"Daily analytics complete: quality={result['quality_score']:.0%}, "
+            f"telegram={result['telegram_sent']}, "
+            f"insights={len(result['insights'])}, "
+            f"errors={len(result['errors'])}"
+        )
+
+        # Record workflow metrics
+        if METRICS_AVAILABLE:
+            WorkflowMetrics.activity_execution_total.labels(
+                activity_name="daily_analytics_graph",
+                status=status
+            ).inc()
+
+            WorkflowMetrics.activity_duration.labels(
+                activity_name="daily_analytics_graph"
+            ).observe(duration)
+
+        await graph.close()
+
+        return result
+
+    except Exception as e:
+        status = "failed"
+        duration = time.time() - start_time
+
+        activity.logger.error(f"Daily analytics graph failed: {str(e)}")
+
+        # Record failure metrics
+        if METRICS_AVAILABLE:
+            WorkflowMetrics.activity_execution_total.labels(
+                activity_name="daily_analytics_graph",
+                status=status
+            ).inc()
+
+            WorkflowMetrics.activity_duration.labels(
+                activity_name="daily_analytics_graph"
+            ).observe(duration)
+
+        raise
+
+
 # Activity list for worker registration
 LANGGRAPH_ACTIVITIES = [
     run_invoice_matcher_graph,
-    run_feed_publisher_graph
+    run_feed_publisher_graph,
+    run_daily_analytics_graph
 ]
