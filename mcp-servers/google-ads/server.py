@@ -163,12 +163,59 @@ def get_customer_id() -> str:
 
 
 def get_client() -> GoogleAdsClient:
-    """Get or create Google Ads client"""
+    """Get or create Google Ads client
+
+    Supports multiple credential sources in priority order:
+    1. Environment variables (Docker container / production)
+    2. YAML config file (~/.claude/config/google-ads.yaml for local development)
+    """
     global _client, _ga_service
     if _client is None:
-        config_path = get_config_path()
-        _client = GoogleAdsClient.load_from_storage(config_path)
+        # Try environment variables first (Docker container)
+        developer_token = os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN")
+        client_id = os.getenv("GOOGLE_ADS_CLIENT_ID")
+        client_secret = os.getenv("GOOGLE_ADS_CLIENT_SECRET")
+        refresh_token = os.getenv("GOOGLE_ADS_REFRESH_TOKEN")
+        login_customer_id = os.getenv("GOOGLE_ADS_LOGIN_CUSTOMER_ID")
+
+        logger.info("Attempting to initialize Google Ads client...")
+        logger.info(f"  GOOGLE_ADS_DEVELOPER_TOKEN: {'SET' if developer_token else 'NOT SET'}")
+        logger.info(f"  GOOGLE_ADS_CLIENT_ID: {'SET' if client_id else 'NOT SET'}")
+        logger.info(f"  GOOGLE_ADS_CLIENT_SECRET: {'SET' if client_secret else 'NOT SET'}")
+        logger.info(f"  GOOGLE_ADS_REFRESH_TOKEN: {'SET' if refresh_token else 'NOT SET'}")
+        logger.info(f"  GOOGLE_ADS_LOGIN_CUSTOMER_ID: {'SET' if login_customer_id else 'NOT SET'}")
+
+        if developer_token and client_id and client_secret and refresh_token:
+            # Configure from environment variables
+            logger.info("Using environment variables for Google Ads configuration")
+            credentials = {
+                "developer_token": developer_token,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": refresh_token,
+                "use_proto_plus": True
+            }
+            if login_customer_id:
+                credentials["login_customer_id"] = login_customer_id
+
+            _client = GoogleAdsClient.load_from_dict(credentials)
+            logger.info("Google Ads client initialized from environment variables")
+        else:
+            # Fall back to YAML config file
+            config_path = get_config_path()
+            logger.info(f"Trying YAML config file: {config_path}")
+
+            if not Path(config_path).exists():
+                error_msg = f"Google Ads config not found. Either set environment variables (GOOGLE_ADS_DEVELOPER_TOKEN, GOOGLE_ADS_CLIENT_ID, GOOGLE_ADS_CLIENT_SECRET, GOOGLE_ADS_REFRESH_TOKEN) or create config file at {config_path}"
+                logger.error(error_msg)
+                raise Exception(error_msg)
+
+            _client = GoogleAdsClient.load_from_storage(config_path)
+            logger.info("Google Ads client initialized from YAML config")
+
         _ga_service = _client.get_service("GoogleAdsService")
+        logger.info("Google Ads service initialized successfully")
+
     return _client
 
 

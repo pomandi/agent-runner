@@ -64,7 +64,7 @@ def get_credentials_path() -> str:
     if default_path.exists():
         return str(default_path)
 
-    raise Exception("Google credentials file not found. Set GOOGLE_CREDENTIALS_PATH environment variable.")
+    return None  # Return None instead of raising - we'll try other methods
 
 
 def get_merchant_id() -> str:
@@ -73,8 +73,15 @@ def get_merchant_id() -> str:
 
 
 def get_service():
-    """Get or create Merchant Center API service"""
+    """Get or create Merchant Center API service
+
+    Supports multiple credential sources in priority order:
+    1. GOOGLE_CREDENTIALS_JSON environment variable (JSON string)
+    2. GOOGLE_CREDENTIALS_PATH environment variable (path to file)
+    3. Default file paths
+    """
     global _service
+    import sys
 
     if _service is not None:
         return _service
@@ -82,16 +89,42 @@ def get_service():
     try:
         from google.oauth2 import service_account
         from googleapiclient.discovery import build
+        import json as json_module
 
-        credentials_path = get_credentials_path()
         scopes = ['https://www.googleapis.com/auth/content']
+        credentials = None
 
-        credentials = service_account.Credentials.from_service_account_file(
-            credentials_path,
-            scopes=scopes
-        )
+        # 1. Try JSON string from environment variable
+        json_creds = os.getenv("GOOGLE_CREDENTIALS_JSON")
+        if json_creds:
+            print("[MERCHANT-CENTER] Using GOOGLE_CREDENTIALS_JSON env var", file=sys.stderr)
+            try:
+                creds_dict = json_module.loads(json_creds)
+                credentials = service_account.Credentials.from_service_account_info(
+                    creds_dict,
+                    scopes=scopes
+                )
+            except Exception as e:
+                print(f"[MERCHANT-CENTER] Failed to parse JSON credentials: {e}", file=sys.stderr)
+
+        # 2. Try file path
+        if credentials is None:
+            credentials_path = get_credentials_path()
+            if credentials_path:
+                print(f"[MERCHANT-CENTER] Using credentials file: {credentials_path}", file=sys.stderr)
+                credentials = service_account.Credentials.from_service_account_file(
+                    credentials_path,
+                    scopes=scopes
+                )
+
+        if credentials is None:
+            raise Exception(
+                "Google credentials not found. Set GOOGLE_CREDENTIALS_JSON (JSON string) or "
+                "GOOGLE_CREDENTIALS_PATH (file path) environment variable."
+            )
 
         _service = build('content', 'v2.1', credentials=credentials)
+        print("[MERCHANT-CENTER] Service initialized successfully", file=sys.stderr)
         return _service
 
     except ImportError:

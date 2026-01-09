@@ -64,20 +64,57 @@ _credentials: Optional[dict] = None
 
 
 def load_credentials() -> dict:
-    """Load credentials from .env file"""
+    """Load credentials from environment variables or .env file
+
+    Supports multiple credential sources in priority order:
+    1. Environment variables (Docker container / production)
+    2. .env file (~/.claude/.env for local development)
+
+    Supports both naming conventions:
+    - META_ACCESS_TOKEN_POMANDI (container env vars)
+    - FACEBOOK_ACCESS_TOKEN (legacy/standard naming)
+    """
     global _credentials
     if _credentials is not None:
         return _credentials
 
-    env_file = Path.home() / '.claude' / '.env'
     credentials = {}
 
-    if env_file.exists():
-        with open(env_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                if line.strip() and not line.startswith('#') and '=' in line:
-                    key, value = line.strip().split('=', 1)
-                    credentials[key] = value.strip('"').strip("'")
+    # 1. Try environment variables first (Docker container)
+    # Support both META_* and FACEBOOK_* naming conventions
+    env_mappings = [
+        # (credential_key, env_var_options)
+        ('FACEBOOK_ACCESS_TOKEN', ['META_ACCESS_TOKEN_POMANDI', 'META_ACCESS_TOKEN', 'FACEBOOK_ACCESS_TOKEN']),
+        ('FACEBOOK_APP_ID', ['META_APP_ID_POMANDI', 'META_APP_ID', 'FACEBOOK_APP_ID']),
+        ('FACEBOOK_APP_SECRET', ['META_APP_SECRET_POMANDI', 'META_APP_SECRET', 'FACEBOOK_APP_SECRET']),
+        ('FACEBOOK_AD_ACCOUNT_ID', ['META_AD_ACCOUNT_ID_POMANDI', 'META_AD_ACCOUNT_ID', 'FACEBOOK_AD_ACCOUNT_ID']),
+        ('FACEBOOK_PAGE_ID', ['META_PAGE_ID_POMANDI', 'META_PAGE_ID', 'FACEBOOK_PAGE_ID']),
+        ('FACEBOOK_IG_ACCOUNT_ID', ['META_IG_ACCOUNT_ID_POMANDI', 'META_IG_ACCOUNT_ID', 'FACEBOOK_IG_ACCOUNT_ID']),
+    ]
+
+    for cred_key, env_options in env_mappings:
+        for env_var in env_options:
+            value = os.environ.get(env_var)
+            if value:
+                credentials[cred_key] = value
+                break
+
+    # 2. Fall back to .env file for local development
+    if not credentials.get('FACEBOOK_ACCESS_TOKEN'):
+        env_file = Path.home() / '.claude' / '.env'
+        if env_file.exists():
+            with open(env_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.strip() and not line.startswith('#') and '=' in line:
+                        key, value = line.strip().split('=', 1)
+                        # Only add if not already set from env vars
+                        if key not in credentials:
+                            credentials[key] = value.strip('"').strip("'")
+
+    # Log loaded credentials (without sensitive values)
+    loaded_keys = list(credentials.keys())
+    import sys
+    print(f"[META-ADS] Loaded credentials: {loaded_keys}", file=sys.stderr)
 
     _credentials = credentials
     return credentials

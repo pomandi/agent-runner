@@ -51,20 +51,49 @@ _credentials: Optional[dict] = None
 
 
 def load_credentials() -> dict:
-    """Load credentials from .env file"""
+    """Load credentials from environment variables or .env file
+
+    Supports multiple credential sources in priority order:
+    1. Environment variables (Docker container / production)
+    2. .env file (~/.claude/.env for local development)
+    """
     global _credentials
     if _credentials is not None:
         return _credentials
 
-    env_file = Path.home() / '.claude' / '.env'
     credentials = {}
 
-    if env_file.exists():
-        with open(env_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                if line.strip() and not line.startswith('#') and '=' in line:
-                    key, value = line.strip().split('=', 1)
-                    credentials[key] = value.strip('"').strip("'")
+    # 1. Try environment variables first (Docker container)
+    env_mappings = [
+        ('AFSPRAAK_DB_HOST', ['AFSPRAAK_DB_HOST']),
+        ('AFSPRAAK_DB_USER', ['AFSPRAAK_DB_USER']),
+        ('AFSPRAAK_DB_PASSWORD', ['AFSPRAAK_DB_PASSWORD']),
+        ('AFSPRAAK_DB_NAME', ['AFSPRAAK_DB_NAME']),
+        ('AFSPRAAK_DB_PORT', ['AFSPRAAK_DB_PORT']),
+    ]
+
+    for cred_key, env_options in env_mappings:
+        for env_var in env_options:
+            value = os.environ.get(env_var)
+            if value:
+                credentials[cred_key] = value
+                break
+
+    # 2. Fall back to .env file for local development
+    if not credentials.get('AFSPRAAK_DB_HOST'):
+        env_file = Path.home() / '.claude' / '.env'
+        if env_file.exists():
+            with open(env_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.strip() and not line.startswith('#') and '=' in line:
+                        key, value = line.strip().split('=', 1)
+                        if key not in credentials:
+                            credentials[key] = value.strip('"').strip("'")
+
+    # Log loaded credentials (without sensitive values)
+    import sys
+    loaded_keys = list(credentials.keys())
+    print(f"[AFSPRAAK-DB] Loaded credentials: {loaded_keys}", file=sys.stderr)
 
     _credentials = credentials
     return credentials

@@ -73,7 +73,7 @@ def get_credentials_path() -> str:
     if default_path.exists():
         return str(default_path)
 
-    raise Exception("Google credentials file not found. Set GOOGLE_CREDENTIALS_PATH environment variable.")
+    return None  # Return None instead of raising - we'll try other methods
 
 
 def get_property_id() -> str:
@@ -93,24 +93,68 @@ def get_property_id() -> str:
     raise Exception("GA4_PROPERTY_ID not found. Set environment variable or add to ~/.claude/.env")
 
 
+def _get_google_credentials(scopes: list):
+    """Get Google credentials from environment variable or file
+
+    Supports multiple credential sources in priority order:
+    1. GOOGLE_CREDENTIALS_JSON environment variable (JSON string)
+    2. GOOGLE_CREDENTIALS_PATH environment variable (path to file)
+    3. Default file paths
+    """
+    import sys
+    from google.oauth2 import service_account
+
+    credentials = None
+
+    # 1. Try JSON string from environment variable
+    json_creds = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    if json_creds:
+        print("[ANALYTICS] Using GOOGLE_CREDENTIALS_JSON env var", file=sys.stderr)
+        try:
+            creds_dict = json.loads(json_creds)
+            credentials = service_account.Credentials.from_service_account_info(
+                creds_dict,
+                scopes=scopes
+            )
+        except Exception as e:
+            print(f"[ANALYTICS] Failed to parse JSON credentials: {e}", file=sys.stderr)
+
+    # 2. Try file path
+    if credentials is None:
+        credentials_path = get_credentials_path()
+        if credentials_path:
+            print(f"[ANALYTICS] Using credentials file: {credentials_path}", file=sys.stderr)
+            credentials = service_account.Credentials.from_service_account_file(
+                credentials_path,
+                scopes=scopes
+            )
+
+    if credentials is None:
+        raise Exception(
+            "Google credentials not found. Set GOOGLE_CREDENTIALS_JSON (JSON string) or "
+            "GOOGLE_CREDENTIALS_PATH (file path) environment variable."
+        )
+
+    return credentials
+
+
 def get_data_client():
     """Get or create GA4 Data API client"""
     global _data_client
+    import sys
 
     if _data_client is not None:
         return _data_client
 
     try:
         from google.analytics.data_v1beta import BetaAnalyticsDataClient
-        from google.oauth2 import service_account
 
-        credentials_path = get_credentials_path()
-        credentials = service_account.Credentials.from_service_account_file(
-            credentials_path,
+        credentials = _get_google_credentials(
             scopes=['https://www.googleapis.com/auth/analytics.readonly']
         )
 
         _data_client = BetaAnalyticsDataClient(credentials=credentials)
+        print("[ANALYTICS] Data client initialized successfully", file=sys.stderr)
         return _data_client
 
     except ImportError:
@@ -120,21 +164,20 @@ def get_data_client():
 def get_admin_client():
     """Get or create GA4 Admin API client"""
     global _admin_client
+    import sys
 
     if _admin_client is not None:
         return _admin_client
 
     try:
         from google.analytics.admin_v1beta import AnalyticsAdminServiceClient
-        from google.oauth2 import service_account
 
-        credentials_path = get_credentials_path()
-        credentials = service_account.Credentials.from_service_account_file(
-            credentials_path,
+        credentials = _get_google_credentials(
             scopes=['https://www.googleapis.com/auth/analytics.readonly']
         )
 
         _admin_client = AnalyticsAdminServiceClient(credentials=credentials)
+        print("[ANALYTICS] Admin client initialized successfully", file=sys.stderr)
         return _admin_client
 
     except ImportError:
