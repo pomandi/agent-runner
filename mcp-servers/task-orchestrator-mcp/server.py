@@ -102,40 +102,27 @@ async def tool_trigger_workflow(args: Dict[str, Any]) -> str:
     if not workflow_type:
         return "❌ workflow_type required"
 
-    # Dynamic workflow import - try different modules
-    workflow_class = None
+    # Available workflows (must match registered workflows in worker.py)
+    available_workflows = [
+        'FeedPublisherWorkflow',
+        'AppointmentCollectorWorkflow',
+        'DailyAnalyticsWorkflow',
+        'WeeklyAnalyticsWorkflow',
+        'EmailAssistantWorkflow',
+        'DailyEmailSummaryWorkflow',
+    ]
 
-    # Map workflow classes to their modules
-    workflow_map = {
-        'FeedPublisherWorkflow': 'temporal_app.workflows.feed_publisher',
-        'AppointmentCollectorWorkflow': 'temporal_app.workflows.appointment_collector',
-        'DailyAnalyticsWorkflow': 'temporal_app.workflows.daily_analytics',
-        'WeeklyAnalyticsWorkflow': 'temporal_app.workflows.daily_analytics',
-        'EmailAssistantWorkflow': 'temporal_app.workflows.email_assistant_workflow',
-        'DailyEmailSummaryWorkflow': 'temporal_app.workflows.email_assistant_workflow',
-    }
-
-    module_name = workflow_map.get(workflow_type)
-
-    if module_name:
-        try:
-            # Import the module
-            import importlib
-            module = importlib.import_module(module_name)
-            workflow_class = getattr(module, workflow_type, None)
-        except (ImportError, AttributeError) as e:
-            return f"❌ Failed to import workflow '{workflow_type}': {e}"
-
-    if not workflow_class:
-        available = ', '.join(workflow_map.keys())
-        return f"❌ Workflow '{workflow_type}' not found. Available: {available}"
+    if workflow_type not in available_workflows:
+        return f"❌ Workflow '{workflow_type}' not found. Available: {', '.join(available_workflows)}"
 
     # Generate ID if not provided
     if not workflow_id:
         workflow_id = f"manual-{workflow_type}-{int(datetime.utcnow().timestamp())}"
 
+    # Start workflow by name (string) - no import needed
+    # The worker will handle the actual workflow class resolution
     handle = await client.start_workflow(
-        workflow=workflow_class.run,
+        workflow=workflow_type,  # Use workflow name as string
         args=workflow_args,
         id=workflow_id,
         task_queue=TASK_QUEUE,

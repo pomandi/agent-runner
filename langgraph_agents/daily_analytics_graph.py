@@ -29,12 +29,14 @@ Schedule: Daily 08:00 UTC (10:00 Amsterdam)
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from langgraph.graph import StateGraph, END
+from pathlib import Path
 import structlog
 import time
 import os
 import asyncio
 import asyncpg
 import httpx
+import json
 
 from .base_graph import BaseAgentGraph
 from .state_schemas import DailyAnalyticsState, init_daily_analytics_state
@@ -46,14 +48,27 @@ try:
 except ImportError:
     METRICS_AVAILABLE = False
 
-# Import Claude Agent SDK
+# Import Claude Agent SDK (for analysis nodes)
 try:
     from claude_agent_sdk import query, ClaudeAgentOptions
     CLAUDE_SDK_AVAILABLE = True
 except ImportError:
     CLAUDE_SDK_AVAILABLE = False
 
+# Import MCP Python SDK (for direct MCP server calls)
+_mcp_import_error = None
+try:
+    from mcp import ClientSession, StdioServerParameters, types
+    from mcp.client.stdio import stdio_client
+    MCP_SDK_AVAILABLE = True
+except ImportError as e:
+    MCP_SDK_AVAILABLE = False
+    _mcp_import_error = str(e)
+
 logger = structlog.get_logger(__name__)
+
+# Log MCP SDK availability at startup
+logger.info("mcp_sdk_status", available=MCP_SDK_AVAILABLE, error=_mcp_import_error)
 
 
 class DailyAnalyticsGraph(BaseAgentGraph):
@@ -111,6 +126,155 @@ class DailyAnalyticsGraph(BaseAgentGraph):
         super().__init__(*args, **kwargs)
         self.regenerate_count = 0
         self.max_regenerate = 2
+        self._mcp_dir = Path(__file__).parent.parent / "mcp-servers"
+
+    def _get_server_path(self, server_name: str) -> Optional[Path]:
+        """Get the path to an MCP server script."""
+        server_path = self._mcp_dir / server_name / "server.py"
+        if server_path.exists():
+            return server_path
+        logger.warning(f"MCP server not found: {server_name} at {server_path}")
+        return None
+
+    async def _call_mcp_tool(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Call an MCP server tool directly using MCP Python SDK.
+
+        This uses stdio_client to spawn the MCP server as a subprocess
+        and communicate via stdin/stdout using the MCP protocol.
+
+        Args:
+            server_name: Name of the MCP server (e.g., 'google-ads')
+            tool_name: Name of the tool to call (e.g., 'get_campaigns')
+            arguments: Arguments to pass to the tool
+
+        Returns:
+            Dict with tool result or error
+        """
+        if not MCP_SDK_AVAILABLE:
+            logger.error("MCP SDK not available")
+            return {"error": "MCP SDK not available"}
+
+        server_path = self._get_server_path(server_name)
+        if not server_path:
+            return {"error": f"MCP server '{server_name}' not found"}
+
+        try:
+            # Create server parameters
+            server_params = StdioServerParameters(
+                command="python3",
+                args=[str(server_path)],
+                env=dict(os.environ)  # Pass all env vars (API keys, etc.)
+            )
+
+            logger.info(f"Calling MCP tool: {server_name}/{tool_name}", arguments=arguments)
+
+            # Connect to MCP server and call tool
+            async with stdio_client(server_params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    # Initialize the session
+                    await session.initialize()
+
+                    # Call the tool
+                    result = await session.call_tool(tool_name, arguments)
+
+                    # Parse the result
+                    if result.content:
+                        for content in result.content:
+                            if hasattr(content, 'text'):
+                                try:
+                                    return json.loads(content.text)
+                                except json.JSONDecodeError:
+                                    return {"raw_response": content.text}
+
+                    return {"error": "No content in response"}
+
+        except Exception as e:
+            error_msg = f"MCP tool call failed: {server_name}/{tool_name}: {str(e)}"
+            logger.error(error_msg)
+            return {"error": error_msg}
+
+    async def _call_mcp_tools_batch(
+        self,
+        server_name: str,
+        tools: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Call multiple tools on the same MCP server in a single session.
+
+        This is more efficient than calling _call_mcp_tool multiple times
+        because it reuses the same server connection.
+
+        Args:
+            server_name: Name of the MCP server
+            tools: List of dicts with 'name' and 'arguments' keys
+
+        Returns:
+            List of results for each tool call
+        """
+        logger.info("mcp_batch_call_start", server=server_name, tools=[t.get("name") for t in tools], mcp_sdk_available=MCP_SDK_AVAILABLE)
+
+        if not MCP_SDK_AVAILABLE:
+            logger.warning("mcp_sdk_not_available", error=_mcp_import_error)
+            return [{"error": f"MCP SDK not available: {_mcp_import_error}"} for _ in tools]
+
+        server_path = self._get_server_path(server_name)
+        if not server_path:
+            logger.warning("mcp_server_not_found", server=server_name, mcp_dir=str(self._mcp_dir))
+            return [{"error": f"MCP server '{server_name}' not found at {self._mcp_dir}"} for _ in tools]
+
+        logger.info("mcp_server_found", server=server_name, path=str(server_path))
+        results = []
+
+        try:
+            server_params = StdioServerParameters(
+                command="python3",
+                args=[str(server_path)],
+                env=dict(os.environ)
+            )
+
+            logger.info("mcp_connecting", server=server_name)
+            async with stdio_client(server_params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    logger.info("mcp_session_initialized", server=server_name)
+
+                    for tool in tools:
+                        tool_name = tool.get("name")
+                        arguments = tool.get("arguments", {})
+
+                        try:
+                            logger.debug("mcp_tool_calling", server=server_name, tool=tool_name)
+                            result = await session.call_tool(tool_name, arguments)
+                            if result.content:
+                                for content in result.content:
+                                    if hasattr(content, 'text'):
+                                        try:
+                                            parsed = json.loads(content.text)
+                                            results.append(parsed)
+                                            logger.debug("mcp_tool_success", server=server_name, tool=tool_name)
+                                        except json.JSONDecodeError:
+                                            results.append({"raw_response": content.text[:500]})
+                                        break
+                                else:
+                                    results.append({"error": "No text content"})
+                            else:
+                                results.append({"error": "No content"})
+                        except Exception as e:
+                            logger.error("mcp_tool_error", server=server_name, tool=tool_name, error=str(e))
+                            results.append({"error": str(e)})
+
+        except Exception as e:
+            logger.error("mcp_batch_call_failed", server=server_name, error=str(e))
+            results = [{"error": str(e)} for _ in tools]
+
+        logger.info("mcp_batch_call_complete", server=server_name, results_count=len(results))
+        return results
 
     def build_graph(self) -> StateGraph:
         """Build daily analytics graph."""
@@ -173,31 +337,51 @@ class DailyAnalyticsGraph(BaseAgentGraph):
     # =========================================================================
 
     async def fetch_google_ads_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
-        """Fetch Google Ads campaign data via MCP."""
+        """Fetch Google Ads campaign data via direct MCP tool call."""
         try:
             days = state["days"]
             brand = state["brand"]
 
-            # TODO: Use google-ads MCP server
-            # For now, return mock data structure
+            logger.info("Fetching Google Ads data", days=days, brand=brand)
+
+            # Call MCP tools directly using batch for efficiency
+            results = await self._call_mcp_tools_batch("google-ads", [
+                {"name": "get_account_summary", "arguments": {"days": days}},
+                {"name": "get_campaigns", "arguments": {"days": days}},
+                {"name": "get_keywords", "arguments": {"days": days, "limit": 20}},
+            ])
+
+            account_summary = results[0] if len(results) > 0 else {}
+            campaigns = results[1] if len(results) > 1 else {}
+            keywords = results[2] if len(results) > 2 else {}
+
+            # Build consolidated data
             data = {
                 "source": "google_ads",
                 "period_days": days,
-                "campaigns": [],
-                "total_spend": 0.0,
-                "total_clicks": 0,
-                "total_conversions": 0,
-                "top_keywords": [],
+                "account_summary": account_summary,
+                "campaigns": campaigns.get("campaigns", []),
+                "total_spend": account_summary.get("totals", {}).get("cost", 0),
+                "total_clicks": account_summary.get("totals", {}).get("clicks", 0),
+                "total_impressions": account_summary.get("totals", {}).get("impressions", 0),
+                "total_conversions": account_summary.get("totals", {}).get("conversions", 0),
+                "avg_cpc": account_summary.get("totals", {}).get("cpc", 0),
+                "avg_ctr": account_summary.get("totals", {}).get("ctr", 0),
+                "top_keywords": keywords.get("keywords", [])[:20],
                 "error": None
             }
 
-            # Try to call MCP if available
-            # mcp__google-ads__get_campaigns({"days": days, "brand": brand})
+            # Check for errors in results
+            for i, r in enumerate(results):
+                if r.get("error"):
+                    data["error"] = f"Tool {i} error: {r['error']}"
+                    state["errors"].append(data["error"])
+                    break
 
             state["google_ads_data"] = data
             state = self.add_step(state, "fetch_google_ads")
 
-            logger.info("google_ads_fetched", days=days, brand=brand)
+            logger.info("google_ads_fetched", days=days, brand=brand, has_error=bool(data.get("error")))
 
         except Exception as e:
             error_msg = f"Google Ads fetch failed: {str(e)}"
@@ -208,29 +392,58 @@ class DailyAnalyticsGraph(BaseAgentGraph):
         return state
 
     async def fetch_meta_ads_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
-        """Fetch Meta Ads (Facebook/Instagram) data via MCP."""
+        """Fetch Meta Ads (Facebook/Instagram) data via direct MCP tool call."""
         try:
             days = state["days"]
             brand = state["brand"]
 
+            logger.info("Fetching Meta Ads data", days=days, brand=brand)
+
+            # Call MCP tools directly using batch
+            results = await self._call_mcp_tools_batch("meta-ads", [
+                {"name": "get_campaigns", "arguments": {"days": days}},
+                {"name": "get_adsets", "arguments": {"days": days}},
+                {"name": "get_ads", "arguments": {"days": days, "limit": 10}},
+            ])
+
+            campaigns = results[0] if len(results) > 0 else {}
+            adsets = results[1] if len(results) > 1 else {}
+            ads = results[2] if len(results) > 2 else {}
+
+            # Calculate totals from campaigns
+            total_spend = sum(float(c.get("spend", 0)) for c in campaigns.get("campaigns", []))
+            total_reach = sum(int(c.get("reach", 0)) for c in campaigns.get("campaigns", []))
+            total_impressions = sum(int(c.get("impressions", 0)) for c in campaigns.get("campaigns", []))
+            total_clicks = sum(int(c.get("clicks", 0)) for c in campaigns.get("campaigns", []))
+
+            # Build consolidated data
             data = {
                 "source": "meta_ads",
                 "period_days": days,
-                "campaigns": [],
-                "total_spend": 0.0,
-                "total_reach": 0,
-                "total_clicks": 0,
-                "total_conversions": 0,
-                "top_audiences": [],
+                "campaigns": campaigns.get("campaigns", []),
+                "adsets": adsets.get("adsets", []),
+                "ads": ads.get("ads", []),
+                "total_spend": total_spend,
+                "total_reach": total_reach,
+                "total_impressions": total_impressions,
+                "total_clicks": total_clicks,
+                "total_conversions": campaigns.get("summary", {}).get("conversions", 0),
+                "avg_cpm": campaigns.get("summary", {}).get("cpm", 0),
+                "avg_ctr": campaigns.get("summary", {}).get("ctr", 0),
                 "error": None
             }
 
-            # TODO: Use meta-ads MCP server
+            # Check for errors
+            for i, r in enumerate(results):
+                if r.get("error"):
+                    data["error"] = f"Tool {i} error: {r['error']}"
+                    state["errors"].append(data["error"])
+                    break
 
             state["meta_ads_data"] = data
             state = self.add_step(state, "fetch_meta_ads")
 
-            logger.info("meta_ads_fetched", days=days, brand=brand)
+            logger.info("meta_ads_fetched", days=days, brand=brand, has_error=bool(data.get("error")))
 
         except Exception as e:
             error_msg = f"Meta Ads fetch failed: {str(e)}"
@@ -363,29 +576,37 @@ class DailyAnalyticsGraph(BaseAgentGraph):
         return state
 
     async def fetch_ga4_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
-        """Fetch Google Analytics 4 data via MCP."""
+        """Fetch Google Analytics 4 data via direct MCP tool call."""
         try:
             days = state["days"]
 
+            logger.info("Fetching GA4 data", days=days)
+
+            # Call MCP tool directly
+            result = await self._call_mcp_tool("analytics", "get_report", {"days": days})
+
+            # Build consolidated data
             data = {
                 "source": "ga4",
                 "period_days": days,
-                "total_users": 0,
-                "new_users": 0,
-                "sessions": 0,
-                "page_views": 0,
-                "avg_session_duration": 0,
-                "bounce_rate": 0,
-                "top_pages": [],
-                "error": None
+                "total_users": result.get("total_users", 0),
+                "new_users": result.get("new_users", 0),
+                "sessions": result.get("sessions", 0),
+                "page_views": result.get("page_views", 0),
+                "avg_session_duration": result.get("avg_session_duration", 0),
+                "bounce_rate": result.get("bounce_rate", 0),
+                "top_pages": result.get("top_pages", []),
+                "traffic_sources": result.get("traffic_sources", []),
+                "error": result.get("error")
             }
 
-            # TODO: Use analytics MCP server
+            if data["error"]:
+                state["errors"].append(f"GA4 error: {data['error']}")
 
             state["ga4_data"] = data
             state = self.add_step(state, "fetch_ga4")
 
-            logger.info("ga4_fetched", days=days)
+            logger.info("ga4_fetched", days=days, has_error=bool(data.get("error")))
 
         except Exception as e:
             error_msg = f"GA4 fetch failed: {str(e)}"
@@ -396,29 +617,35 @@ class DailyAnalyticsGraph(BaseAgentGraph):
         return state
 
     async def fetch_search_console_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
-        """Fetch Search Console SEO data via MCP."""
+        """Fetch Search Console SEO data via direct MCP tool call."""
         try:
             days = state["days"]
 
+            logger.info("Fetching Search Console data", days=days)
+
+            # Call MCP tool directly
+            result = await self._call_mcp_tool("search-console", "get_performance", {"days": days})
+
+            # Build consolidated data
             data = {
                 "source": "search_console",
                 "period_days": days,
-                "total_clicks": 0,
-                "total_impressions": 0,
-                "avg_ctr": 0,
-                "avg_position": 0,
-                "top_queries": [],
-                "top_pages": [],
-                "position_changes": [],
-                "error": None
+                "total_clicks": result.get("total_clicks", 0),
+                "total_impressions": result.get("total_impressions", 0),
+                "avg_ctr": result.get("avg_ctr", 0),
+                "avg_position": result.get("avg_position", 0),
+                "top_queries": result.get("queries", [])[:20],
+                "top_pages": result.get("pages", [])[:20],
+                "error": result.get("error")
             }
 
-            # TODO: Use search-console MCP server
+            if data["error"]:
+                state["errors"].append(f"Search Console error: {data['error']}")
 
             state["search_console_data"] = data
             state = self.add_step(state, "fetch_search_console")
 
-            logger.info("search_console_fetched", days=days)
+            logger.info("search_console_fetched", days=days, has_error=bool(data.get("error")))
 
         except Exception as e:
             error_msg = f"Search Console fetch failed: {str(e)}"
@@ -429,29 +656,48 @@ class DailyAnalyticsGraph(BaseAgentGraph):
         return state
 
     async def fetch_merchant_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
-        """Fetch Google Merchant Center data via MCP."""
+        """Fetch Google Merchant Center data via direct MCP tool call."""
         try:
             days = state["days"]
 
+            logger.info("Fetching Merchant Center data", days=days)
+
+            # Call MCP tools directly using batch
+            results = await self._call_mcp_tools_batch("merchant-center", [
+                {"name": "get_products", "arguments": {}},
+                {"name": "get_performance", "arguments": {"days": days}},
+                {"name": "get_issues", "arguments": {}},
+            ])
+
+            products = results[0] if len(results) > 0 else {}
+            performance = results[1] if len(results) > 1 else {}
+            issues = results[2] if len(results) > 2 else {}
+
+            # Build consolidated data
             data = {
                 "source": "merchant_center",
                 "period_days": days,
-                "total_products": 0,
-                "approved_products": 0,
-                "disapproved_products": 0,
-                "total_clicks": 0,
-                "total_impressions": 0,
-                "top_products": [],
-                "issues": [],
+                "total_products": products.get("total_products", 0),
+                "approved_products": products.get("approved", 0),
+                "disapproved_products": products.get("disapproved", 0),
+                "total_clicks": performance.get("clicks", 0),
+                "total_impressions": performance.get("impressions", 0),
+                "top_products": performance.get("products", [])[:20],
+                "issues": issues.get("issues", []),
                 "error": None
             }
 
-            # TODO: Use merchant-center MCP server
+            # Check for errors
+            for i, r in enumerate(results):
+                if r.get("error"):
+                    data["error"] = f"Tool {i} error: {r['error']}"
+                    state["errors"].append(data["error"])
+                    break
 
             state["merchant_data"] = data
             state = self.add_step(state, "fetch_merchant")
 
-            logger.info("merchant_fetched", days=days)
+            logger.info("merchant_fetched", days=days, has_error=bool(data.get("error")))
 
         except Exception as e:
             error_msg = f"Merchant Center fetch failed: {str(e)}"
@@ -462,30 +708,52 @@ class DailyAnalyticsGraph(BaseAgentGraph):
         return state
 
     async def fetch_shopify_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
-        """Fetch Shopify orders and revenue data via MCP."""
+        """Fetch Shopify orders and revenue data via direct MCP tool call."""
         try:
             days = state["days"]
             brand = state["brand"]
 
+            logger.info("Fetching Shopify data", days=days, brand=brand)
+
+            # Call MCP tools directly using batch
+            results = await self._call_mcp_tools_batch("shopify", [
+                {"name": "get_orders", "arguments": {"days": days}},
+                {"name": "get_products", "arguments": {"limit": 20}},
+            ])
+
+            orders = results[0] if len(results) > 0 else {}
+            products = results[1] if len(results) > 1 else {}
+
+            # Calculate totals from orders
+            order_list = orders.get("orders", [])
+            total_revenue = sum(float(o.get("total_price", 0)) for o in order_list)
+            avg_order_value = total_revenue / len(order_list) if order_list else 0
+
+            # Build consolidated data
             data = {
                 "source": "shopify",
                 "period_days": days,
-                "total_orders": 0,
-                "total_revenue": 0.0,
-                "average_order_value": 0.0,
-                "new_customers": 0,
-                "returning_customers": 0,
-                "top_products": [],
-                "abandoned_carts": 0,
+                "total_orders": len(order_list),
+                "total_revenue": total_revenue,
+                "average_order_value": avg_order_value,
+                "new_customers": orders.get("new_customers", 0),
+                "returning_customers": orders.get("returning_customers", 0),
+                "top_products": products.get("products", [])[:20],
+                "abandoned_carts": orders.get("abandoned_checkouts", 0),
                 "error": None
             }
 
-            # TODO: Use shopify MCP server
+            # Check for errors
+            for i, r in enumerate(results):
+                if r.get("error"):
+                    data["error"] = f"Tool {i} error: {r['error']}"
+                    state["errors"].append(data["error"])
+                    break
 
             state["shopify_data"] = data
             state = self.add_step(state, "fetch_shopify")
 
-            logger.info("shopify_fetched", days=days, brand=brand)
+            logger.info("shopify_fetched", days=days, brand=brand, has_error=bool(data.get("error")))
 
         except Exception as e:
             error_msg = f"Shopify fetch failed: {str(e)}"
@@ -496,31 +764,50 @@ class DailyAnalyticsGraph(BaseAgentGraph):
         return state
 
     async def fetch_appointments_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
-        """Fetch appointment data from Afspraak-DB via MCP."""
+        """Fetch appointment data from Afspraak-DB via direct MCP tool call."""
         try:
             days = state["days"]
             brand = state["brand"]
 
+            logger.info("Fetching Appointments data", days=days, brand=brand)
+
+            # Call MCP tools directly using batch
+            results = await self._call_mcp_tools_batch("afspraak-db", [
+                {"name": "get_appointments", "arguments": {"days": days}},
+                {"name": "get_appointment_stats", "arguments": {"days": days}},
+            ])
+
+            appointments = results[0] if len(results) > 0 else {}
+            stats = results[1] if len(results) > 1 else {}
+
+            # Build consolidated data
             data = {
                 "source": "afspraak_db",
                 "period_days": days,
-                "total_appointments": 0,
-                "confirmed_appointments": 0,
-                "cancelled_appointments": 0,
-                "no_shows": 0,
-                "gclid_attributed": 0,
-                "fbclid_attributed": 0,
-                "conversion_rate": 0.0,
-                "by_service": [],
+                "total_appointments": stats.get("total", 0),
+                "confirmed_appointments": stats.get("confirmed", 0),
+                "cancelled_appointments": stats.get("cancelled", 0),
+                "no_shows": stats.get("no_shows", 0),
+                "gclid_attributed": stats.get("gclid_attributed", 0),
+                "fbclid_attributed": stats.get("fbclid_attributed", 0),
+                "conversion_rate": stats.get("conversion_rate", 0),
+                "by_service": stats.get("by_service", []),
+                "by_source": stats.get("by_source", []),
+                "appointments": appointments.get("appointments", []),
                 "error": None
             }
 
-            # TODO: Use afspraak-db MCP server
+            # Check for errors
+            for i, r in enumerate(results):
+                if r.get("error"):
+                    data["error"] = f"Tool {i} error: {r['error']}"
+                    state["errors"].append(data["error"])
+                    break
 
             state["appointments_data"] = data
             state = self.add_step(state, "fetch_appointments")
 
-            logger.info("appointments_fetched", days=days, brand=brand)
+            logger.info("appointments_fetched", days=days, brand=brand, has_error=bool(data.get("error")))
 
         except Exception as e:
             error_msg = f"Appointments fetch failed: {str(e)}"
@@ -623,7 +910,10 @@ Yaniti MARKDOWN formatinda ver. Kisa ve oz ol, sadece onemli bulgulari raporla."
                 response = ""
                 async for msg in query(
                     prompt=prompt,
-                    options=ClaudeAgentOptions(max_turns=1)
+                    options=ClaudeAgentOptions(
+                        max_turns=1,
+                        permission_mode="bypassPermissions"
+                    )
                 ):
                     if hasattr(msg, 'content'):
                         for block in msg.content:
@@ -682,7 +972,10 @@ Kisa ve oz yaz. Gereksiz detay verme."""
                 response = ""
                 async for msg in query(
                     prompt=prompt,
-                    options=ClaudeAgentOptions(max_turns=1)
+                    options=ClaudeAgentOptions(
+                        max_turns=1,
+                        permission_mode="bypassPermissions"
+                    )
                 ):
                     if hasattr(msg, 'content'):
                         for block in msg.content:
