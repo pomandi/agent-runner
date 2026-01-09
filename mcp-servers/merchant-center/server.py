@@ -99,6 +99,11 @@ def get_service():
         if json_creds:
             print("[MERCHANT-CENTER] Using GOOGLE_CREDENTIALS_JSON env var", file=sys.stderr)
             try:
+                # Handle potential double-escaping from Coolify API
+                # If JSON starts with escaped quotes, try to decode first
+                if json_creds.startswith('{\\'):
+                    print("[MERCHANT-CENTER] Detected escaped JSON, decoding...", file=sys.stderr)
+                    json_creds = json_creds.encode().decode('unicode_escape')
                 creds_dict = json_module.loads(json_creds)
                 credentials = service_account.Credentials.from_service_account_info(
                     creds_dict,

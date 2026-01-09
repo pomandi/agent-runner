@@ -213,11 +213,15 @@ async def run_daily_analytics_graph(
 
         duration = time.time() - start_time
 
+        # Get counts before truncating
+        error_count = len(result.get('errors', []))
+        steps_count = len(result.get('steps_completed', []))
+
         activity.logger.info(
             f"Daily analytics complete: quality={result['quality_score']:.0%}, "
             f"telegram={result['telegram_sent']}, "
             f"insights={len(result['insights'])}, "
-            f"errors={len(result['errors'])}"
+            f"errors={error_count}"
         )
 
         # Record workflow metrics
@@ -233,7 +237,29 @@ async def run_daily_analytics_graph(
 
         await graph.close()
 
-        return result
+        # IMPORTANT: Truncate large lists to avoid gRPC message size limit (4MB)
+        # The state uses operator.add which causes exponential growth
+        truncated_result = {
+            "success": result.get("success", False),
+            "brand": result.get("brand", brand),
+            "period_days": result.get("period_days", days),
+            "report_markdown": result.get("report_markdown", ""),
+            "insights": result.get("insights", [])[:20],  # Max 20 insights
+            "recommendations": result.get("recommendations", [])[:20],  # Max 20
+            "quality_score": result.get("quality_score", 0.0),
+            "telegram_sent": result.get("telegram_sent", False),
+            "telegram_message_id": result.get("telegram_message_id"),
+            # Only include unique errors and limit count
+            "errors": list(set(result.get("errors", [])))[:50],
+            "error_count": error_count,
+            # Only include unique steps and limit count
+            "steps_completed": list(set(result.get("steps_completed", [])))[:50],
+            "steps_count": steps_count,
+            "regenerate_attempts": result.get("regenerate_attempts", 0),
+            "duration_seconds": duration
+        }
+
+        return truncated_result
 
     except Exception as e:
         status = "failed"
