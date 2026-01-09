@@ -478,8 +478,8 @@ class DailyAnalyticsGraph(BaseAgentGraph):
             db_url = os.getenv("VISITOR_TRACKING_DATABASE_URL")
 
             if db_url:
-                # Heroku PostgreSQL requires SSL
-                conn = await asyncpg.connect(db_url, ssl='require')
+                # Connect to PostgreSQL (Coolify DB doesn't require SSL)
+                conn = await asyncpg.connect(db_url)
 
                 try:
                     # Date range
