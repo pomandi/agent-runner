@@ -494,21 +494,22 @@ class DailyAnalyticsGraph(BaseAgentGraph):
                             COUNT(CASE WHEN utm_source IS NOT NULL THEN 1 END) as utm_sessions,
                             COUNT(CASE WHEN gclid IS NOT NULL THEN 1 END) as gclid_sessions,
                             COUNT(CASE WHEN fbclid IS NOT NULL THEN 1 END) as fbclid_sessions,
-                            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_seconds) as median_session_duration
+                            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY total_time_ms / 1000.0) as median_session_duration
                         FROM sessions
-                        WHERE created_at >= $1 AND created_at < $2
+                        WHERE started_at >= $1 AND started_at < $2
                     """
                     session_stats = await conn.fetchrow(sessions_query, start_date, end_date)
 
-                    # Query conversions
+                    # Query conversions with conversion type names
                     conversions_query = """
                         SELECT
                             COUNT(*) as total_conversions,
-                            goal_type,
+                            ct.name as goal_type,
                             COUNT(*) as count
-                        FROM conversions
-                        WHERE created_at >= $1 AND created_at < $2
-                        GROUP BY goal_type
+                        FROM conversions c
+                        LEFT JOIN conversion_types ct ON c.conversion_type_id = ct.id
+                        WHERE c.created_at >= $1 AND c.created_at < $2
+                        GROUP BY ct.name
                     """
                     conversions = await conn.fetch(conversions_query, start_date, end_date)
 
@@ -519,7 +520,7 @@ class DailyAnalyticsGraph(BaseAgentGraph):
                             COUNT(*) as sessions,
                             COUNT(DISTINCT visitor_id) as unique_visitors
                         FROM sessions
-                        WHERE created_at >= $1 AND created_at < $2
+                        WHERE started_at >= $1 AND started_at < $2
                         GROUP BY landing_page
                         ORDER BY sessions DESC
                         LIMIT 10
@@ -533,7 +534,7 @@ class DailyAnalyticsGraph(BaseAgentGraph):
                             COALESCE(utm_medium, 'none') as medium,
                             COUNT(*) as sessions
                         FROM sessions
-                        WHERE created_at >= $1 AND created_at < $2
+                        WHERE started_at >= $1 AND started_at < $2
                         GROUP BY utm_source, utm_medium
                         ORDER BY sessions DESC
                         LIMIT 10
