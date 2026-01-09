@@ -40,8 +40,19 @@ from uuid import uuid4
 # LOGGING
 # ============================================================================
 
-LOG_DIR = Path("/workspace/server-data/logs/mcp-servers")
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+# Log dosyası yolu - try multiple paths
+LOG_DIR = None
+for log_path in ["/app/logs/mcp-servers", "/tmp/mcp-servers", "/var/log/mcp-servers"]:
+    try:
+        LOG_DIR = Path(log_path)
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        break
+    except (PermissionError, OSError):
+        continue
+
+if LOG_DIR is None:
+    LOG_DIR = Path("/tmp")
+
 LOG_FILE = LOG_DIR / "pmax-wizard-mcp.log"
 
 logger = logging.getLogger("pmax-wizard")
