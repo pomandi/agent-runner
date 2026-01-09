@@ -21,7 +21,7 @@ import logging
 
 # Import activities
 with workflow.unsafe.imports_passed_through():
-    from temporal_app.activities.analytics_activities import run_daily_analytics_graph
+    from temporal_app.activities.langgraph_activities import run_daily_analytics_graph
     from temporal_app.monitoring import observe_workflow
 
 logger = logging.getLogger(__name__)

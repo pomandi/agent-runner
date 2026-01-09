@@ -18,6 +18,8 @@ class CollectionName(str, Enum):
     SOCIAL_POSTS = "social_posts"
     AD_REPORTS = "ad_reports"
     AGENT_CONTEXT = "agent_context"
+    EMAIL_PATTERNS = "email_patterns"
+    EMAIL_CONVERSATIONS = "email_conversations"
 
 
 # Collection configurations with vector params and schema
@@ -89,6 +91,45 @@ COLLECTION_CONFIGS: Dict[CollectionName, Dict[str, Any]] = {
             "metadata": "json"
         },
         "description": "General agent execution context for learning from past runs"
+    },
+
+    CollectionName.EMAIL_PATTERNS: {
+        "vectors_config": VectorParams(
+            size=1536,
+            distance=Distance.COSINE
+        ),
+        "schema": {
+            "sender_email": "str",
+            "sender_domain": "str",
+            "subject_pattern": "str",
+            "response_template": "str",
+            "response_tone": "str",  # "formal", "casual", "professional"
+            "avg_response_time_minutes": "int",
+            "usage_count": "int",
+            "success_rate": "float",  # 0-1
+            "last_used": "str",  # ISO datetime
+            "created_at": "str"  # ISO datetime
+        },
+        "description": "Learned email response patterns for auto-reply"
+    },
+
+    CollectionName.EMAIL_CONVERSATIONS: {
+        "vectors_config": VectorParams(
+            size=1536,
+            distance=Distance.COSINE
+        ),
+        "schema": {
+            "thread_id": "str",
+            "sender_email": "str",
+            "subject": "str",
+            "conversation_summary": "str",
+            "last_response": "str",
+            "response_date": "str",  # ISO datetime
+            "sentiment": "str",  # "positive", "negative", "neutral"
+            "context_tags": "list[str]",  # ["work", "urgent", "meeting"]
+            "created_at": "str"  # ISO datetime
+        },
+        "description": "Email conversation history for context-aware responses"
     }
 }
 

@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from temporal_app.workflows.feed_publisher import FeedPublisherWorkflow
 from temporal_app.workflows.appointment_collector import AppointmentCollectorWorkflow
 from temporal_app.workflows.daily_analytics import DailyAnalyticsWorkflow, WeeklyAnalyticsWorkflow
+from temporal_app.workflows.email_assistant_workflow import EmailAssistantWorkflow, DailyEmailSummaryWorkflow
 
 # Import activities
 from temporal_app.activities.social_media import (
@@ -40,6 +41,11 @@ from temporal_app.activities.langgraph_wrapper import (
 )
 from temporal_app.activities.langgraph_activities import (
     run_daily_analytics_graph,
+)
+from temporal_app.activities.email_activities import (
+    send_daily_email_summary,
+    run_email_assistant_check,
+    process_pending_approvals,
 )
 
 logging.basicConfig(
@@ -75,6 +81,8 @@ async def run_worker():
         AppointmentCollectorWorkflow,
         DailyAnalyticsWorkflow,
         WeeklyAnalyticsWorkflow,
+        EmailAssistantWorkflow,
+        DailyEmailSummaryWorkflow,
     ]
 
     activities = [
@@ -95,6 +103,10 @@ async def run_worker():
         check_caption_duplicate,
         # LangGraph activities (full graph execution)
         run_daily_analytics_graph,
+        # Email assistant activities
+        send_daily_email_summary,
+        run_email_assistant_check,
+        process_pending_approvals,
     ]
 
     # Create worker

@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from temporal_app.workflows.feed_publisher import FeedPublisherWorkflow
 from temporal_app.workflows.daily_analytics import DailyAnalyticsWorkflow, WeeklyAnalyticsWorkflow
+from temporal_app.workflows.email_assistant_workflow import DailyEmailSummaryWorkflow
 
 logging.basicConfig(
     level=logging.INFO,
@@ -216,6 +217,44 @@ async def setup_schedules():
             logger.info(f"⚠️  Schedule '{schedule_id_weekly}' already exists, skipping")
         else:
             logger.error(f"❌ Failed to create schedule '{schedule_id_weekly}': {e}")
+            raise
+
+    # Schedule 5: Daily Email Summary (06:00 UTC = 07:00 Amsterdam)
+    schedule_id_email = "daily-email-summary"
+
+    logger.info(f"\n📬 Creating schedule: {schedule_id_email}")
+    logger.info("   Summary at: 06:00 UTC (07:00 Amsterdam)")
+
+    try:
+        await client.create_schedule(
+            id=schedule_id_email,
+            schedule=Schedule(
+                action=ScheduleActionStartWorkflow(
+                    workflow=DailyEmailSummaryWorkflow.run,
+                    id="daily-email-summary-run",
+                    task_queue=task_queue,
+                    execution_timeout=timedelta(minutes=5),
+                    run_timeout=timedelta(minutes=5),
+                ),
+                spec=ScheduleSpec(
+                    cron_expressions=["0 6 * * *"],  # 06:00 UTC = 07:00 Amsterdam
+                ),
+                state=ScheduleState(
+                    note="Daily email summary sent to Telegram at 07:00 Amsterdam",
+                    paused=False,
+                ),
+                policy=SchedulePolicy(
+                    overlap=ScheduleOverlapPolicy.SKIP,
+                    catchup_window=timedelta(minutes=30),
+                ),
+            ),
+        )
+        logger.info(f"✅ Schedule '{schedule_id_email}' created successfully")
+    except Exception as e:
+        if "already exists" in str(e).lower():
+            logger.info(f"⚠️  Schedule '{schedule_id_email}' already exists, skipping")
+        else:
+            logger.error(f"❌ Failed to create schedule '{schedule_id_email}': {e}")
             raise
 
     # List all schedules to verify

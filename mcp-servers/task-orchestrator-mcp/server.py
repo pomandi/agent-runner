@@ -109,6 +109,10 @@ async def tool_trigger_workflow(args: Dict[str, Any]) -> str:
     workflow_map = {
         'FeedPublisherWorkflow': 'temporal_app.workflows.feed_publisher',
         'AppointmentCollectorWorkflow': 'temporal_app.workflows.appointment_collector',
+        'DailyAnalyticsWorkflow': 'temporal_app.workflows.daily_analytics',
+        'WeeklyAnalyticsWorkflow': 'temporal_app.workflows.daily_analytics',
+        'EmailAssistantWorkflow': 'temporal_app.workflows.email_assistant_workflow',
+        'DailyEmailSummaryWorkflow': 'temporal_app.workflows.email_assistant_workflow',
     }
 
     module_name = workflow_map.get(workflow_type)
