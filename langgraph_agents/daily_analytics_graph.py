@@ -679,25 +679,33 @@ class DailyAnalyticsGraph(BaseAgentGraph):
 
             logger.info("Fetching Merchant Center data", days=days)
 
-            # Call MCP tools directly - use get_account_summary for complete data
+            # Call MCP tools directly - use get_shopping_summary for complete data
+            # Note: get_account_summary doesn't exist! Use get_shopping_summary instead
             results = await self._call_mcp_tools_batch("merchant-center", [
-                {"name": "get_account_summary", "arguments": {}},
+                {"name": "get_shopping_summary", "arguments": {"days": days}},
             ])
 
             summary = results[0] if len(results) > 0 else {}
-            product_status = summary.get("product_status", {})
+
+            # Extract data from get_shopping_summary response structure:
+            # - performance_summary: {total_products, total_clicks, total_impressions, average_ctr}
+            # - health_summary: {products_checked, critical_issues, warnings, disapproved}
+            # - insights: {health_score, clicks_formatted, impressions_formatted}
+            perf = summary.get("performance_summary", {})
+            health = summary.get("health_summary", {})
+            insights = summary.get("insights", {})
 
             # Build consolidated data
             data = {
                 "source": "merchant_center",
                 "period_days": days,
-                "total_products": product_status.get("total_products", 0),
-                "approved_products": product_status.get("products_checked", 0) - product_status.get("disapproved", 0),
-                "disapproved_products": product_status.get("disapproved", 0),
-                "products_with_issues": product_status.get("with_issues", 0),
-                "health_score": summary.get("health", {}).get("health_score", 0),
-                "total_clicks": summary.get("performance", {}).get("clicks", 0),
-                "total_impressions": summary.get("performance", {}).get("impressions", 0),
+                "total_products": perf.get("total_products", 0),
+                "approved_products": health.get("products_checked", 0) - health.get("disapproved", 0),
+                "disapproved_products": health.get("disapproved", 0),
+                "products_with_issues": health.get("critical_issues", 0) + health.get("warnings", 0),
+                "health_score": insights.get("health_score", 0),
+                "total_clicks": perf.get("total_clicks", 0),
+                "total_impressions": perf.get("total_impressions", 0),
                 "top_products": summary.get("top_products", [])[:20],
                 "issues": summary.get("top_issues", []),
                 "error": None
