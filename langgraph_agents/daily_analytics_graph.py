@@ -784,17 +784,14 @@ class DailyAnalyticsGraph(BaseAgentGraph):
             stats = results[1] if len(results) > 1 else {}
 
             # Build consolidated data
+            # Note: MCP server returns "total_appointments", "with_gclid", "with_fbclid"
             data = {
                 "source": "afspraak_db",
                 "period_days": days,
-                "total_appointments": stats.get("total", 0),
-                "confirmed_appointments": stats.get("confirmed", 0),
-                "cancelled_appointments": stats.get("cancelled", 0),
-                "no_shows": stats.get("no_shows", 0),
-                "gclid_attributed": stats.get("gclid_attributed", 0),
-                "fbclid_attributed": stats.get("fbclid_attributed", 0),
-                "conversion_rate": stats.get("conversion_rate", 0),
-                "by_service": stats.get("by_service", []),
+                "total_appointments": stats.get("total_appointments", 0),
+                "gclid_attributed": stats.get("with_gclid", 0),
+                "fbclid_attributed": stats.get("with_fbclid", 0),
+                "with_visitor_id": stats.get("with_visitor_id", 0),
                 "by_source": stats.get("by_source", []),
                 "appointments": appointments.get("appointments", []),
                 "error": None
