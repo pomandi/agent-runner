@@ -54,7 +54,7 @@ async def run_email_assistant_check(
         return result
 
     except Exception as e:
-        activity.logger.error("email_assistant_check_failed", error=str(e))
+        activity.logger.error(f"email_assistant_check_failed: {str(e)}")
         raise
 
 
@@ -144,17 +144,14 @@ async def send_daily_email_summary() -> Dict[str, Any]:
                 "emails_count": total
             }
         else:
-            activity.logger.error(
-                "send_daily_email_summary_failed",
-                error=result.get("description")
-            )
+            activity.logger.error(f"send_daily_email_summary_failed: {result.get('description')}")
             return {
                 "success": False,
                 "error": result.get("description")
             }
 
     except Exception as e:
-        activity.logger.error("send_daily_email_summary_error", error=str(e))
+        activity.logger.error(f"send_daily_email_summary_error: {str(e)}")
         raise
 
 
@@ -196,5 +193,5 @@ async def process_pending_approvals() -> Dict[str, Any]:
         return result
 
     except Exception as e:
-        activity.logger.error("process_pending_approvals_failed", error=str(e))
+        activity.logger.error(f"process_pending_approvals_failed: {str(e)}")
         raise

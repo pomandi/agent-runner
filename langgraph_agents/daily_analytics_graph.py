@@ -356,17 +356,19 @@ class DailyAnalyticsGraph(BaseAgentGraph):
             keywords = results[2] if len(results) > 2 else {}
 
             # Build consolidated data
+            # Note: MCP server returns "account_totals", not "totals"
+            totals = account_summary.get("account_totals", account_summary.get("totals", {}))
             data = {
                 "source": "google_ads",
                 "period_days": days,
                 "account_summary": account_summary,
                 "campaigns": campaigns.get("campaigns", []),
-                "total_spend": account_summary.get("totals", {}).get("cost", 0),
-                "total_clicks": account_summary.get("totals", {}).get("clicks", 0),
-                "total_impressions": account_summary.get("totals", {}).get("impressions", 0),
-                "total_conversions": account_summary.get("totals", {}).get("conversions", 0),
-                "avg_cpc": account_summary.get("totals", {}).get("cpc", 0),
-                "avg_ctr": account_summary.get("totals", {}).get("ctr", 0),
+                "total_spend": totals.get("cost", 0),
+                "total_clicks": totals.get("clicks", 0),
+                "total_impressions": totals.get("impressions", 0),
+                "total_conversions": totals.get("conversions", 0),
+                "avg_cpc": totals.get("cpc", 0),
+                "avg_ctr": totals.get("ctr", 0),
                 "top_keywords": keywords.get("keywords", [])[:20],
                 "error": None
             }
@@ -664,28 +666,27 @@ class DailyAnalyticsGraph(BaseAgentGraph):
 
             logger.info("Fetching Merchant Center data", days=days)
 
-            # Call MCP tools directly using batch
+            # Call MCP tools directly - use get_account_summary for complete data
             results = await self._call_mcp_tools_batch("merchant-center", [
-                {"name": "get_products", "arguments": {}},
-                {"name": "get_performance", "arguments": {"days": days}},
-                {"name": "get_issues", "arguments": {}},
+                {"name": "get_account_summary", "arguments": {}},
             ])
 
-            products = results[0] if len(results) > 0 else {}
-            performance = results[1] if len(results) > 1 else {}
-            issues = results[2] if len(results) > 2 else {}
+            summary = results[0] if len(results) > 0 else {}
+            product_status = summary.get("product_status", {})
 
             # Build consolidated data
             data = {
                 "source": "merchant_center",
                 "period_days": days,
-                "total_products": products.get("total_products", 0),
-                "approved_products": products.get("approved", 0),
-                "disapproved_products": products.get("disapproved", 0),
-                "total_clicks": performance.get("clicks", 0),
-                "total_impressions": performance.get("impressions", 0),
-                "top_products": performance.get("products", [])[:20],
-                "issues": issues.get("issues", []),
+                "total_products": product_status.get("total_products", 0),
+                "approved_products": product_status.get("products_checked", 0) - product_status.get("disapproved", 0),
+                "disapproved_products": product_status.get("disapproved", 0),
+                "products_with_issues": product_status.get("with_issues", 0),
+                "health_score": summary.get("health", {}).get("health_score", 0),
+                "total_clicks": summary.get("performance", {}).get("clicks", 0),
+                "total_impressions": summary.get("performance", {}).get("impressions", 0),
+                "top_products": summary.get("top_products", [])[:20],
+                "issues": summary.get("top_issues", []),
                 "error": None
             }
 
@@ -1098,26 +1099,43 @@ Kisa ve oz yaz. Gereksiz detay verme."""
             # Google Ads
             ga = sources.get("google_ads", {})
             if ga and not ga.get("error"):
-                report += f"| Google Ads Harcama | €{ga.get('total_spend', 0):,.2f} |\n"
-                report += f"| Google Ads Tik | {ga.get('total_clicks', 0):,} |\n"
+                spend = ga.get('total_spend', 0)
+                clicks = ga.get('total_clicks', 0)
+                conversions = ga.get('total_conversions', 0)
+                report += f"| Google Ads Harcama | €{spend:,.2f} |\n"
+                report += f"| Google Ads Tik | {clicks:,} |\n"
+                report += f"| Google Ads CTR | {ga.get('avg_ctr', 0):.2f}% |\n"
+                report += f"| Google Ads Conversion | {conversions:,.1f} |\n"
 
             # Meta Ads
             ma = sources.get("meta_ads", {})
             if ma and not ma.get("error"):
                 report += f"| Meta Ads Harcama | €{ma.get('total_spend', 0):,.2f} |\n"
                 report += f"| Meta Ads Erisim | {ma.get('total_reach', 0):,} |\n"
+                report += f"| Meta Ads Tik | {ma.get('total_clicks', 0):,} |\n"
 
             # Visitor Tracking
             vt = sources.get("visitor_tracking", {})
             if vt and not vt.get("error"):
                 report += f"| Site Oturumu | {vt.get('total_sessions', 0):,} |\n"
                 report += f"| Benzersiz Ziyaretci | {vt.get('unique_visitors', 0):,} |\n"
+                report += f"| GCLID Oturum | {vt.get('gclid_sessions', 0):,} |\n"
 
             # Shopify
             sh = sources.get("shopify", {})
             if sh and not sh.get("error"):
-                report += f"| Siparis | {sh.get('total_orders', 0):,} |\n"
-                report += f"| Gelir | €{sh.get('total_revenue', 0):,.2f} |\n"
+                orders = sh.get('total_orders', 0)
+                revenue = sh.get('total_revenue', 0)
+                aov = revenue / orders if orders > 0 else 0
+                report += f"| Siparis | {orders:,} |\n"
+                report += f"| Gelir | €{revenue:,.2f} |\n"
+                report += f"| AOV | €{aov:,.2f} |\n"
+
+            # Merchant Center
+            mc = sources.get("merchant_center", {})
+            if mc and not mc.get("error"):
+                report += f"| Urun Sayisi | {mc.get('total_products', 0):,} |\n"
+                report += f"| Merchant Health | {mc.get('health_score', 0):.0f}% |\n"
 
             # Appointments
             ap = sources.get("appointments", {})
