@@ -110,6 +110,11 @@ services:
       - META_PAGE_ID_COSTUME
       - META_IG_ACCOUNT_ID_COSTUME
       - LOG_LEVEL
+      # Facebook API Credentials (for Meta Ads MCP)
+      - FACEBOOK_APP_ID
+      - FACEBOOK_APP_SECRET
+      - FACEBOOK_ACCESS_TOKEN
+      - FACEBOOK_AD_ACCOUNT_ID
       # NEW: Memory Layer
       - QDRANT_HOST
       - QDRANT_PORT
