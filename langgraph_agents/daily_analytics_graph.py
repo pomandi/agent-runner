@@ -412,11 +412,23 @@ class DailyAnalyticsGraph(BaseAgentGraph):
             adsets = results[1] if len(results) > 1 else {}
             ads = results[2] if len(results) > 2 else {}
 
-            # Calculate totals from campaigns
-            total_spend = sum(float(c.get("spend", 0)) for c in campaigns.get("campaigns", []))
-            total_reach = sum(int(c.get("reach", 0)) for c in campaigns.get("campaigns", []))
-            total_impressions = sum(int(c.get("impressions", 0)) for c in campaigns.get("campaigns", []))
-            total_clicks = sum(int(c.get("clicks", 0)) for c in campaigns.get("campaigns", []))
+            # Note: MCP server returns summary with already-calculated totals
+            # Also campaigns[i]["insights"]["spend"] for per-campaign data
+            summary = campaigns.get("summary", {})
+
+            # Use summary if available, otherwise calculate from campaigns
+            if summary:
+                total_spend = summary.get("total_spend", 0)
+                total_clicks = summary.get("total_clicks", 0)
+                total_impressions = summary.get("total_impressions", 0)
+            else:
+                # Fallback: calculate from campaigns (insights is nested!)
+                total_spend = sum(float(c.get("insights", {}).get("spend", 0) or 0) for c in campaigns.get("campaigns", []))
+                total_clicks = sum(int(c.get("insights", {}).get("clicks", 0) or 0) for c in campaigns.get("campaigns", []))
+                total_impressions = sum(int(c.get("insights", {}).get("impressions", 0) or 0) for c in campaigns.get("campaigns", []))
+
+            # Reach is not in summary, calculate from campaign insights
+            total_reach = sum(int(c.get("insights", {}).get("reach", 0) or 0) for c in campaigns.get("campaigns", []))
 
             # Build consolidated data
             data = {
@@ -425,13 +437,14 @@ class DailyAnalyticsGraph(BaseAgentGraph):
                 "campaigns": campaigns.get("campaigns", []),
                 "adsets": adsets.get("adsets", []),
                 "ads": ads.get("ads", []),
+                "total_campaigns": campaigns.get("total_campaigns", len(campaigns.get("campaigns", []))),
                 "total_spend": total_spend,
                 "total_reach": total_reach,
                 "total_impressions": total_impressions,
                 "total_clicks": total_clicks,
-                "total_conversions": campaigns.get("summary", {}).get("conversions", 0),
-                "avg_cpm": campaigns.get("summary", {}).get("cpm", 0),
-                "avg_ctr": campaigns.get("summary", {}).get("ctr", 0),
+                "total_conversions": summary.get("conversions", 0),
+                "avg_cpm": summary.get("cpm", 0),
+                "avg_ctr": summary.get("avg_ctr", 0),  # MCP returns avg_ctr not ctr
                 "error": None
             }
 
