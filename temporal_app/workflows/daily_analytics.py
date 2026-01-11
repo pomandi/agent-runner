@@ -54,19 +54,23 @@ class DailyAnalyticsWorkflow:
     @workflow.run
     async def run(
         self,
-        days: int = 7,
+        days = 7,
         brand: str = "pomandi"
     ) -> Dict[str, Any]:
         """
         Execute the daily analytics report workflow.
 
         Args:
-            days: Number of days to analyze (default: 7)
+            days: Number of days to analyze (default: 7). Accepts int or str.
             brand: Brand name (pomandi or costume)
 
         Returns:
             Report result with markdown, insights, delivery status
         """
+        # Convert days to int if string (MCP tool workaround)
+        if isinstance(days, str):
+            days = int(days)
+
         workflow.logger.info(f"📊 Starting Daily Analytics for {brand} (last {days} days)")
 
         try:
