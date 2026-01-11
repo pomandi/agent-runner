@@ -47,8 +47,9 @@ SERVER_VERSION = "2.0.0"
 # Initialize MCP server
 server = Server(SERVER_NAME)
 
-# Default Merchant ID
-DEFAULT_MERCHANT_ID = "5625374390"
+# Default Merchant ID - Pomandi account
+# IMPORTANT: Set MERCHANT_CENTER_ID env var for different accounts
+DEFAULT_MERCHANT_ID = "147985742"  # Pomandi (was 5625374390 which was wrong!)
 
 # Global service
 _service = None
@@ -68,8 +69,15 @@ def get_credentials_path() -> str:
 
 
 def get_merchant_id() -> str:
-    """Get Merchant Center ID"""
-    return os.getenv("MERCHANT_CENTER_ID", DEFAULT_MERCHANT_ID)
+    """Get Merchant Center ID with logging"""
+    import sys
+    env_id = os.getenv("MERCHANT_CENTER_ID")
+    if env_id:
+        print(f"[MERCHANT-CENTER] Using MERCHANT_CENTER_ID from env: {env_id}", file=sys.stderr)
+        return env_id
+    else:
+        print(f"[MERCHANT-CENTER] Using DEFAULT_MERCHANT_ID: {DEFAULT_MERCHANT_ID}", file=sys.stderr)
+        return DEFAULT_MERCHANT_ID
 
 
 def get_service():
@@ -516,40 +524,219 @@ async def handle_get_account_info() -> dict:
 # NEW Tool Handlers - Added in v2.0
 # ============================================================================
 
+async def _get_total_feed_products() -> int:
+    """Get total number of products in feed by paginating through all products.
+
+    This gives accurate total count, not just products with performance data.
+    """
+    service = get_service()
+    merchant_id = get_merchant_id()
+
+    total_count = 0
+    next_page_token = None
+
+    try:
+        while True:
+            params = {'merchantId': merchant_id, 'maxResults': 250}
+            if next_page_token:
+                params['pageToken'] = next_page_token
+
+            response = service.products().list(**params).execute()
+            resources = response.get('resources', [])
+            total_count += len(resources)
+
+            next_page_token = response.get('nextPageToken')
+            if not next_page_token:
+                break
+
+        return total_count
+    except Exception as e:
+        import sys
+        print(f"[MERCHANT-CENTER] Error getting total products: {e}", file=sys.stderr)
+        return 0
+
+
+async def _get_all_product_statuses() -> list:
+    """Get ALL product statuses by paginating through entire feed.
+
+    Returns list of product status dicts with destination_statuses and item_level_issues.
+    """
+    service = get_service()
+    merchant_id = get_merchant_id()
+
+    all_statuses = []
+    next_page_token = None
+
+    try:
+        while True:
+            params = {'merchantId': merchant_id, 'maxResults': 250}
+            if next_page_token:
+                params['pageToken'] = next_page_token
+
+            response = service.productstatuses().list(**params).execute()
+            resources = response.get('resources', [])
+
+            for product_status in resources:
+                status_info = {
+                    'product_id': product_status.get('productId'),
+                    'title': product_status.get('title', '')[:50],
+                    'destination_statuses': [],
+                    'item_level_issues': []
+                }
+
+                # Get destination statuses
+                for dest in product_status.get('destinationStatuses', []):
+                    status_info['destination_statuses'].append({
+                        'destination': dest.get('destination'),
+                        'status': dest.get('status'),
+                        'approved_countries': dest.get('approvedCountries', []),
+                        'disapproved_countries': dest.get('disapprovedCountries', [])
+                    })
+
+                # Get item-level issues
+                for issue in product_status.get('itemLevelIssues', []):
+                    status_info['item_level_issues'].append({
+                        'code': issue.get('code'),
+                        'servability': issue.get('servability'),
+                        'resolution': issue.get('resolution'),
+                        'description': issue.get('description'),
+                        'applicable_countries': issue.get('applicableCountries', [])
+                    })
+
+                all_statuses.append(status_info)
+
+            next_page_token = response.get('nextPageToken')
+            if not next_page_token:
+                break
+
+        import sys
+        print(f"[MERCHANT-CENTER] Fetched {len(all_statuses)} product statuses", file=sys.stderr)
+        return all_statuses
+
+    except Exception as e:
+        import sys
+        print(f"[MERCHANT-CENTER] Error getting product statuses: {e}", file=sys.stderr)
+        return []
+
+
 async def handle_get_shopping_summary(days: int = 30) -> dict:
-    """Get comprehensive shopping summary"""
-    # Get performance
-    performance = await handle_get_product_performance(days=days, limit=500)
+    """Get comprehensive shopping summary with accurate product counts"""
+    import sys
 
-    # Get issues
-    issues = await handle_get_feed_issues()
+    merchant_id = get_merchant_id()
+    print(f"[MERCHANT-CENTER] get_shopping_summary using merchant_id: {merchant_id}", file=sys.stderr)
 
-    # Get account info
+    # 1. Get TOTAL PRODUCTS from feed (not performance data)
+    total_feed_products = await _get_total_feed_products()
+
+    # 2. Get performance data (products with clicks/impressions)
+    performance = await handle_get_product_performance(days=days, limit=1000)
+
+    # 3. Get ALL product statuses (paginate to get all)
+    all_statuses = await _get_all_product_statuses()
+
+    # 4. Get account info
     account = await handle_get_account_info()
 
-    summary = performance.get('summary', {})
-    issues_summary = issues.get('summary', {})
+    # Performance metrics
+    perf_summary = performance.get('summary', {})
+
+    # Count statuses accurately
+    status_counts = {
+        "approved": 0,
+        "disapproved": 0,
+        "pending": 0,
+        "limited": 0  # "demoted" in API terms
+    }
+
+    issues_count = 0
+    all_issues = []
+
+    for product in all_statuses:
+        has_disapproved = False
+        has_limited = False
+        has_approved = False
+
+        for dest in product.get('destination_statuses', []):
+            status = dest.get('status', '').lower()
+            if status == 'disapproved':
+                has_disapproved = True
+            elif status == 'approved':
+                has_approved = True
+            elif status in ('pending', 'pending_review'):
+                pass  # Will count as pending
+
+        # Count issues
+        for issue in product.get('item_level_issues', []):
+            severity = issue.get('servability', '')
+            if severity == 'disapproved':
+                issues_count += 1
+            elif severity == 'demoted':
+                has_limited = True
+            all_issues.append(issue)
+
+        # Determine product status
+        if has_disapproved:
+            status_counts["disapproved"] += 1
+        elif has_limited:
+            status_counts["limited"] += 1
+        elif has_approved:
+            status_counts["approved"] += 1
+        else:
+            status_counts["pending"] += 1
+
+    # Aggregate issues by type
+    issue_types = {}
+    for issue in all_issues:
+        code = issue.get('code', 'unknown')
+        if code not in issue_types:
+            issue_types[code] = {
+                'count': 0,
+                'severity': issue.get('servability'),
+                'description': issue.get('description', '')[:100]
+            }
+        issue_types[code]['count'] += 1
+
+    top_issues = sorted(
+        [{'code': k, **v} for k, v in issue_types.items()],
+        key=lambda x: x['count'],
+        reverse=True
+    )[:5]
+
+    # Calculate health score
+    total_checked = len(all_statuses)
+    health_score = 0
+    if total_checked > 0:
+        health_score = round((status_counts["approved"] / total_checked) * 100, 1)
 
     return {
         "account": account.get('account', {}).get('name', 'Unknown'),
+        "merchant_id": merchant_id,
         "date_range_days": days,
+        "feed_summary": {
+            "total_products_in_feed": total_feed_products,
+            "products_checked": total_checked,
+            "approved": status_counts["approved"],
+            "limited": status_counts["limited"],
+            "disapproved": status_counts["disapproved"],
+            "pending": status_counts["pending"]
+        },
         "performance_summary": {
-            "total_products": summary.get('total_products', 0),
-            "total_clicks": summary.get('total_clicks', 0),
-            "total_impressions": summary.get('total_impressions', 0),
-            "average_ctr": summary.get('average_ctr', 0)
+            "products_with_impressions": perf_summary.get('total_products', 0),
+            "total_clicks": perf_summary.get('total_clicks', 0),
+            "total_impressions": perf_summary.get('total_impressions', 0),
+            "average_ctr": perf_summary.get('average_ctr', 0)
         },
         "health_summary": {
-            "products_checked": issues_summary.get('total_products_checked', 0),
-            "critical_issues": issues_summary.get('products_with_critical_issues', 0),
-            "warnings": issues_summary.get('products_with_warnings', 0),
-            "disapproved": issues_summary.get('disapproved_products', 0)
+            "health_score": health_score,
+            "critical_issues": issues_count,
+            "total_issues": len(all_issues)
         },
-        "top_issues": issues.get('top_10_issues', [])[:5],
+        "top_issues": top_issues,
         "insights": {
-            "clicks_formatted": f"{summary.get('total_clicks', 0):,}",
-            "impressions_formatted": f"{summary.get('total_impressions', 0):,}",
-            "health_score": round((1 - issues_summary.get('disapproved_products', 0) / max(issues_summary.get('total_products_checked', 1), 1)) * 100, 1)
+            "approval_rate": f"{health_score}%",
+            "clicks_formatted": f"{perf_summary.get('total_clicks', 0):,}",
+            "impressions_formatted": f"{perf_summary.get('total_impressions', 0):,}"
         }
     }
 

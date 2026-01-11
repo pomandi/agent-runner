@@ -53,7 +53,7 @@ SERVER_VERSION = "2.0.0"
 server = Server(SERVER_NAME)
 
 # Default site
-DEFAULT_SITE = "sc-domain:pomandi.be"
+DEFAULT_SITE = "sc-domain:pomandi.com"
 
 # Global service
 _service = None
@@ -151,7 +151,7 @@ TOOLS = [
             "properties": {
                 "site_url": {
                     "type": "string",
-                    "description": "Site URL (e.g., sc-domain:pomandi.be). Default: sc-domain:pomandi.be"
+                    "description": "Site URL (e.g., sc-domain:pomandi.com). Default: sc-domain:pomandi.com"
                 },
                 "days": {
                     "type": "integer",
@@ -177,7 +177,7 @@ TOOLS = [
             "properties": {
                 "site_url": {
                     "type": "string",
-                    "description": "Site URL. Default: sc-domain:pomandi.be"
+                    "description": "Site URL. Default: sc-domain:pomandi.com"
                 },
                 "days": {
                     "type": "integer",
@@ -198,7 +198,7 @@ TOOLS = [
             "properties": {
                 "site_url": {
                     "type": "string",
-                    "description": "Site URL. Default: sc-domain:pomandi.be"
+                    "description": "Site URL. Default: sc-domain:pomandi.com"
                 },
                 "days": {
                     "type": "integer",
@@ -219,7 +219,7 @@ TOOLS = [
             "properties": {
                 "site_url": {
                     "type": "string",
-                    "description": "Site URL. Default: sc-domain:pomandi.be"
+                    "description": "Site URL. Default: sc-domain:pomandi.com"
                 },
                 "days": {
                     "type": "integer",
@@ -236,7 +236,7 @@ TOOLS = [
             "properties": {
                 "site_url": {
                     "type": "string",
-                    "description": "Site URL. Default: sc-domain:pomandi.be"
+                    "description": "Site URL. Default: sc-domain:pomandi.com"
                 },
                 "days": {
                     "type": "integer",
@@ -253,7 +253,7 @@ TOOLS = [
             "properties": {
                 "site_url": {
                     "type": "string",
-                    "description": "Site URL. Default: sc-domain:pomandi.be"
+                    "description": "Site URL. Default: sc-domain:pomandi.com"
                 }
             }
         }
@@ -275,7 +275,7 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "site_url": {"type": "string", "description": "Site URL. Default: sc-domain:pomandi.be"},
+                "site_url": {"type": "string", "description": "Site URL. Default: sc-domain:pomandi.com"},
                 "days": {"type": "integer", "description": "Number of days. Default: 28"}
             }
         }
@@ -286,7 +286,7 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "site_url": {"type": "string", "description": "Site URL. Default: sc-domain:pomandi.be"},
+                "site_url": {"type": "string", "description": "Site URL. Default: sc-domain:pomandi.com"},
                 "days": {"type": "integer", "description": "Number of days. Default: 28"},
                 "min_impressions": {"type": "integer", "description": "Minimum impressions. Default: 100"}
             }
@@ -298,7 +298,7 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "site_url": {"type": "string", "description": "Site URL. Default: sc-domain:pomandi.be"},
+                "site_url": {"type": "string", "description": "Site URL. Default: sc-domain:pomandi.com"},
                 "days": {"type": "integer", "description": "Number of days. Default: 28"}
             }
         }
@@ -309,7 +309,7 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "site_url": {"type": "string", "description": "Site URL. Default: sc-domain:pomandi.be"},
+                "site_url": {"type": "string", "description": "Site URL. Default: sc-domain:pomandi.com"},
                 "days": {"type": "integer", "description": "Number of days. Default: 28"},
                 "limit": {"type": "integer", "description": "Max results. Default: 200"}
             }
@@ -321,7 +321,7 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "site_url": {"type": "string", "description": "Site URL. Default: sc-domain:pomandi.be"},
+                "site_url": {"type": "string", "description": "Site URL. Default: sc-domain:pomandi.com"},
                 "comparison": {
                     "type": "string",
                     "description": "Comparison type: week (7d vs prev 7d), month (28d vs prev 28d). Default: week",
@@ -336,7 +336,7 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "site_url": {"type": "string", "description": "Site URL. Default: sc-domain:pomandi.be"},
+                "site_url": {"type": "string", "description": "Site URL. Default: sc-domain:pomandi.com"},
                 "days": {"type": "integer", "description": "Number of days. Default: 28"}
             }
         }

@@ -774,16 +774,18 @@ class DailyAnalyticsGraph(BaseAgentGraph):
             return state
 
         result = fetch_result["data"]
+        # MCP server returns data in "summary" dict, not at top level
+        summary = result.get("summary", {})
         data = {
             "source": source_name,
             "period_days": days,
-            "total_users": result.get("total_users", 0),
-            "new_users": result.get("new_users", 0),
-            "sessions": result.get("sessions", 0),
-            "page_views": result.get("page_views", 0),
-            "avg_session_duration": result.get("avg_session_duration", 0),
-            "bounce_rate": result.get("bounce_rate", 0),
-            "top_pages": result.get("top_pages", []),
+            "total_users": summary.get("activeUsers", 0),  # GA4 uses "activeUsers"
+            "new_users": summary.get("newUsers", 0),
+            "sessions": summary.get("sessions", 0),
+            "page_views": summary.get("pageviews", 0),
+            "avg_session_duration": summary.get("avgSessionDuration", 0),
+            "bounce_rate": summary.get("avgBounceRate", 0),
+            "top_pages": result.get("rows", [])[:10],  # Use rows as top pages data
             "traffic_sources": result.get("traffic_sources", []),
             "error": None,
             "fetch_attempts": fetch_result.get("attempts", 1)
@@ -823,14 +825,16 @@ class DailyAnalyticsGraph(BaseAgentGraph):
             return state
 
         result = fetch_result["data"]
+        # MCP server returns data in "summary" dict, not at top level
+        summary = result.get("summary", {})
         data = {
             "source": source_name,
             "period_days": days,
-            "total_clicks": result.get("total_clicks", 0),
-            "total_impressions": result.get("total_impressions", 0),
-            "avg_ctr": result.get("avg_ctr", 0),
-            "avg_position": result.get("avg_position", 0),
-            "top_queries": result.get("queries", [])[:20],
+            "total_clicks": summary.get("total_clicks", 0),
+            "total_impressions": summary.get("total_impressions", 0),
+            "avg_ctr": summary.get("average_ctr", 0),  # Note: "average_ctr" not "avg_ctr"
+            "avg_position": summary.get("average_position", 0),
+            "top_queries": result.get("queries", result.get("rows", []))[:20],
             "top_pages": result.get("pages", [])[:20],
             "error": None,
             "fetch_attempts": fetch_result.get("attempts", 1)

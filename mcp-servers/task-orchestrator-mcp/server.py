@@ -110,6 +110,8 @@ async def tool_trigger_workflow(args: Dict[str, Any]) -> str:
         'WeeklyAnalyticsWorkflow',
         'EmailAssistantWorkflow',
         'DailyEmailSummaryWorkflow',
+        'SEOLandingOptimizerWorkflow',
+        'SEOWeeklyReportWorkflow',
     ]
 
     if workflow_type not in available_workflows:
