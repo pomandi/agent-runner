@@ -371,10 +371,14 @@ class DailyAnalyticsGraph(BaseAgentGraph):
             logger.info("Fetching Google Ads data", days=days, brand=brand)
 
             # Call MCP tools directly using batch for efficiency
+            # Note: get_keywords uses start_date/end_date, not days!
+            end_date_str = datetime.now().strftime("%Y-%m-%d")
+            start_date_str = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
             results = await self._call_mcp_tools_batch("google-ads", [
                 {"name": "get_account_summary", "arguments": {"days": days}},
                 {"name": "get_campaigns", "arguments": {"days": days}},
-                {"name": "get_keywords", "arguments": {"days": days, "limit": 20}},
+                {"name": "get_keywords", "arguments": {"start_date": start_date_str, "end_date": end_date_str, "limit": 20}},
             ])
 
             account_summary = results[0] if len(results) > 0 else {}
@@ -1211,9 +1215,28 @@ KURALLAR:
         try:
             data = state.get("shopify_data", {}) or {}
 
+            # IMPORTANT: Truncate Shopify data to prevent "Argument list too long" error
+            # Only send summary metrics, not full order/product lists
+            truncated_data = {
+                "source": data.get("source", "shopify"),
+                "period_days": data.get("period_days", 7),
+                "total_orders": data.get("total_orders", 0),
+                "total_revenue": data.get("total_revenue", 0),
+                "average_order_value": data.get("average_order_value", 0),
+                "new_customers": data.get("new_customers", 0),
+                "returning_customers": data.get("returning_customers", 0),
+                "abandoned_carts": data.get("abandoned_carts", 0),
+                # Only include top 5 products (truncated)
+                "top_products": [
+                    {"title": p.get("title", ""), "variants_count": len(p.get("variants", []))}
+                    for p in (data.get("top_products", []) or [])[:5]
+                ],
+                "error": data.get("error")
+            }
+
             report = await self._run_source_analysis(
                 source_name="Shopify",
-                data=data,
+                data=truncated_data,
                 expert_role="E-commerce ve satış uzmanı",
                 analysis_focus="""- Toplam sipariş sayısı
 - Toplam gelir (€)
