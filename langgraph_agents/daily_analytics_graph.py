@@ -439,10 +439,11 @@ class DailyAnalyticsGraph(BaseAgentGraph):
             logger.info("Fetching Meta Ads data", days=days, brand=brand)
 
             # Call MCP tools directly using batch
+            # Note: get_ads doesn't support 'limit' parameter
             results = await self._call_mcp_tools_batch("meta-ads", [
                 {"name": "get_campaigns", "arguments": {"days": days}},
                 {"name": "get_adsets", "arguments": {"days": days}},
-                {"name": "get_ads", "arguments": {"days": days, "limit": 10}},
+                {"name": "get_ads", "arguments": {"days": days}},
             ])
 
             # DIAGNOSTIC LOGGING - debug Meta Ads 0 data issue
