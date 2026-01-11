@@ -7,6 +7,7 @@ These activities wrap MCP tool calls and LangGraph execution.
 from temporalio import activity
 from typing import Dict, Any, List, Optional
 import logging
+import os
 import time
 import json
 from pathlib import Path
