@@ -44,6 +44,12 @@ import json
 
 from .base_graph import BaseAgentGraph
 from .state_schemas import DailyAnalyticsState, init_daily_analytics_state
+from .error_handling import (
+    fetch_with_smart_retry,
+    ErrorAggregator,
+    circuit_registry,
+    diagnose_error
+)
 
 # Import monitoring metrics
 try:
@@ -142,6 +148,10 @@ class DailyAnalyticsGraph(BaseAgentGraph):
         self.regenerate_count = 0
         self.max_regenerate = 2
         self._mcp_dir = Path(__file__).parent.parent / "mcp-servers"
+        # Error tracking for resilient data collection
+        self.error_aggregator = ErrorAggregator()
+        # Reset circuit breakers on new instance (optional - remove if you want persistence)
+        # circuit_registry.reset()
 
     def _get_server_path(self, server_name: str) -> Optional[Path]:
         """Get the path to an MCP server script."""
@@ -202,10 +212,20 @@ class DailyAnalyticsGraph(BaseAgentGraph):
                     if result.content:
                         for content in result.content:
                             if hasattr(content, 'text'):
+                                text = content.text
+                                # Check if response is an error message (MCP servers return "Error: ...")
+                                if text.startswith("Error:"):
+                                    error_msg = text[6:].strip()  # Remove "Error:" prefix
+                                    logger.error("mcp_tool_returned_error", server=server_name, tool=tool_name, error=error_msg)
+                                    return {"error": error_msg, "raw_response": text}
                                 try:
-                                    return json.loads(content.text)
+                                    return json.loads(text)
                                 except json.JSONDecodeError:
-                                    return {"raw_response": content.text}
+                                    # Check if it looks like an error even without prefix
+                                    if "credentials" in text.lower() or "not found" in text.lower() or "failed" in text.lower():
+                                        logger.warning("mcp_possible_error_in_response", server=server_name, tool=tool_name, text=text[:200])
+                                        return {"error": text, "raw_response": text}
+                                    return {"raw_response": text}
 
                     return {"error": "No content in response"}
 
@@ -269,19 +289,31 @@ class DailyAnalyticsGraph(BaseAgentGraph):
                             if result.content:
                                 for content in result.content:
                                     if hasattr(content, 'text'):
+                                        text = content.text
+                                        # Check if response is an error message (MCP servers return "Error: ...")
+                                        if text.startswith("Error:"):
+                                            error_msg = text[6:].strip()
+                                            logger.error("mcp_tool_returned_error", server=server_name, tool=tool_name, error=error_msg)
+                                            results.append({"error": error_msg, "raw_response": text})
+                                            break
                                         try:
-                                            parsed = json.loads(content.text)
+                                            parsed = json.loads(text)
                                             results.append(parsed)
                                             logger.debug("mcp_tool_success", server=server_name, tool=tool_name)
                                         except json.JSONDecodeError as e:
-                                            # DIAGNOSTIC: Log JSON parse failure details
-                                            logger.warning("mcp_json_parse_failed",
-                                                server=server_name,
-                                                tool=tool_name,
-                                                error=str(e),
-                                                text_preview=content.text[:200] if content.text else "EMPTY"
-                                            )
-                                            results.append({"raw_response": content.text[:500]})
+                                            # Check if it looks like an error even without prefix
+                                            if "credentials" in text.lower() or "not found" in text.lower() or "failed" in text.lower():
+                                                logger.warning("mcp_possible_error_in_response", server=server_name, tool=tool_name, text=text[:200])
+                                                results.append({"error": text, "raw_response": text})
+                                            else:
+                                                # DIAGNOSTIC: Log JSON parse failure details
+                                                logger.warning("mcp_json_parse_failed",
+                                                    server=server_name,
+                                                    tool=tool_name,
+                                                    error=str(e),
+                                                    text_preview=text[:200] if text else "EMPTY"
+                                                )
+                                                results.append({"raw_response": text[:500]})
                                         break
                                 else:
                                     results.append({"error": "No text content"})
@@ -370,536 +402,630 @@ class DailyAnalyticsGraph(BaseAgentGraph):
     # =========================================================================
 
     async def fetch_google_ads_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
-        """Fetch Google Ads campaign data via direct MCP tool call."""
-        try:
-            days = state["days"]
-            brand = state["brand"]
+        """Fetch Google Ads campaign data with smart error handling."""
+        source_name = "google_ads"
+        days = state["days"]
+        brand = state["brand"]
 
-            logger.info("Fetching Google Ads data", days=days, brand=brand)
+        logger.info("Fetching Google Ads data", days=days, brand=brand)
 
-            # Call MCP tools directly using batch for efficiency
-            # Note: get_keywords uses start_date/end_date, not days!
-            end_date_str = datetime.now().strftime("%Y-%m-%d")
-            start_date_str = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        # Date range for keywords
+        end_date_str = datetime.now().strftime("%Y-%m-%d")
+        start_date_str = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
-            results = await self._call_mcp_tools_batch("google-ads", [
-                {"name": "get_account_summary", "arguments": {"days": days}},
-                {"name": "get_campaigns", "arguments": {"days": days}},
-                {"name": "get_keywords", "arguments": {"start_date": start_date_str, "end_date": end_date_str, "limit": 20}},
-            ])
+        tools = [
+            {"name": "get_account_summary", "arguments": {"days": days}},
+            {"name": "get_campaigns", "arguments": {"days": days}},
+            {"name": "get_keywords", "arguments": {"start_date": start_date_str, "end_date": end_date_str, "limit": 20}},
+        ]
 
-            account_summary = results[0] if len(results) > 0 else {}
-            campaigns = results[1] if len(results) > 1 else {}
-            keywords = results[2] if len(results) > 2 else {}
+        # Smart fetch with error diagnosis and auto-fix attempts
+        fetch_result = await fetch_with_smart_retry(
+            source_name=source_name,
+            fetch_func=lambda: self._call_mcp_tools_batch("google-ads", tools),
+            context={"mcp_dir": str(self._mcp_dir)},
+            max_retries=3,
+            circuit_threshold=5,
+            circuit_cooldown=120.0
+        )
 
-            # Build consolidated data
-            # Note: MCP server returns "account_totals", not "totals"
-            totals = account_summary.get("account_totals", account_summary.get("totals", {}))
-            data = {
-                "source": "google_ads",
-                "period_days": days,
-                "account_summary": account_summary,
-                "campaigns": campaigns.get("campaigns", []),
-                "total_spend": totals.get("cost", 0),
-                "total_clicks": totals.get("clicks", 0),
-                "total_impressions": totals.get("impressions", 0),
-                "total_conversions": totals.get("conversions", 0),
-                "avg_cpc": totals.get("cpc", 0),
-                "avg_ctr": totals.get("ctr", 0),
-                "top_keywords": keywords.get("keywords", [])[:20],
-                "error": None
+        if not fetch_result["success"]:
+            # Log detailed diagnosis
+            diagnosis = fetch_result.get("diagnosis", {})
+            logger.error(
+                "google_ads_fetch_failed",
+                error=fetch_result.get("error"),
+                category=diagnosis.get("category"),
+                cause=diagnosis.get("probable_cause"),
+                fix=diagnosis.get("suggested_fix"),
+                attempts=fetch_result.get("attempts"),
+                fixes_tried=fetch_result.get("fixes_applied", [])
+            )
+
+            state["google_ads_data"] = {
+                "source": source_name,
+                "error": fetch_result.get("error"),
+                "diagnosis": diagnosis
             }
-
-            # Check for errors in results
-            for i, r in enumerate(results):
-                if r.get("error"):
-                    data["error"] = f"Tool {i} error: {r['error']}"
-                    state["errors"].append(data["error"])
-                    break
-
-            state["google_ads_data"] = data
+            state["errors"].append(fetch_result.get("error", "Unknown error"))
+            self.error_aggregator.add_error(
+                source_name,
+                fetch_result.get("error", "Unknown"),
+                attempts=fetch_result.get("attempts", 1),
+                fixes_tried=fetch_result.get("fixes_applied", [])
+            )
             state = self.add_step(state, "fetch_google_ads")
+            return state
 
-            logger.info("google_ads_fetched", days=days, brand=brand, has_error=bool(data.get("error")))
+        # Success - process results
+        results = fetch_result["data"]
+        account_summary = results[0] if len(results) > 0 else {}
+        campaigns = results[1] if len(results) > 1 else {}
+        keywords = results[2] if len(results) > 2 else {}
 
-        except Exception as e:
-            error_msg = f"Google Ads fetch failed: {str(e)}"
-            state["google_ads_data"] = {"error": error_msg}
-            state["errors"].append(error_msg)
-            logger.error("google_ads_fetch_error", error=str(e))
+        totals = account_summary.get("account_totals", account_summary.get("totals", {}))
+        data = {
+            "source": source_name,
+            "period_days": days,
+            "account_summary": account_summary,
+            "campaigns": campaigns.get("campaigns", []),
+            "total_spend": totals.get("cost", 0),
+            "total_clicks": totals.get("clicks", 0),
+            "total_impressions": totals.get("impressions", 0),
+            "total_conversions": totals.get("conversions", 0),
+            "avg_cpc": totals.get("cpc", 0),
+            "avg_ctr": totals.get("ctr", 0),
+            "top_keywords": keywords.get("keywords", [])[:20],
+            "error": None,
+            "fetch_attempts": fetch_result.get("attempts", 1),
+            "fixes_applied": fetch_result.get("fixes_applied", [])
+        }
+
+        self.error_aggregator.add_success(source_name)
+        state["google_ads_data"] = data
+        state = self.add_step(state, "fetch_google_ads")
+
+        logger.info(
+            "google_ads_fetched",
+            days=days,
+            brand=brand,
+            attempts=fetch_result.get("attempts"),
+            wait_time=fetch_result.get("total_wait_time", 0)
+        )
 
         return state
 
     async def fetch_meta_ads_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
-        """Fetch Meta Ads (Facebook/Instagram) data via direct MCP tool call."""
-        try:
-            days = state["days"]
-            brand = state["brand"]
+        """Fetch Meta Ads (Facebook/Instagram) data with smart error handling and token refresh."""
+        source_name = "meta_ads"
+        days = state["days"]
+        brand = state["brand"]
 
-            logger.info("Fetching Meta Ads data", days=days, brand=brand)
+        logger.info("Fetching Meta Ads data", days=days, brand=brand)
 
-            # Call MCP tools directly using batch
-            # Note: get_ads doesn't support 'limit' parameter
-            results = await self._call_mcp_tools_batch("meta-ads", [
-                {"name": "get_campaigns", "arguments": {"days": days}},
-                {"name": "get_adsets", "arguments": {"days": days}},
-                {"name": "get_ads", "arguments": {"days": days}},
-            ])
+        tools = [
+            {"name": "get_campaigns", "arguments": {"days": days}},
+            {"name": "get_adsets", "arguments": {"days": days}},
+            {"name": "get_ads", "arguments": {"days": days}},
+        ]
 
-            # DIAGNOSTIC LOGGING - debug Meta Ads 0 data issue
-            logger.info("meta_ads_raw_results", results_count=len(results), results_keys=[list(r.keys()) if isinstance(r, dict) else type(r).__name__ for r in results])
+        # Smart fetch with auto token refresh for auth errors
+        fetch_result = await fetch_with_smart_retry(
+            source_name=source_name,
+            fetch_func=lambda: self._call_mcp_tools_batch("meta-ads", tools),
+            context={"mcp_dir": str(self._mcp_dir)},
+            max_retries=3,
+            circuit_threshold=5,
+            circuit_cooldown=120.0
+        )
 
-            campaigns = results[0] if len(results) > 0 else {}
-            adsets = results[1] if len(results) > 1 else {}
-            ads = results[2] if len(results) > 2 else {}
-
-            # DIAGNOSTIC: Log what we got from get_campaigns
-            logger.info("meta_ads_campaigns_debug",
-                campaigns_type=type(campaigns).__name__,
-                campaigns_keys=list(campaigns.keys()) if isinstance(campaigns, dict) else "NOT_DICT",
-                total_campaigns=campaigns.get("total_campaigns") if isinstance(campaigns, dict) else None,
-                has_summary="summary" in campaigns if isinstance(campaigns, dict) else False,
-                has_error="error" in campaigns if isinstance(campaigns, dict) else False,
-                error_msg=campaigns.get("error") if isinstance(campaigns, dict) else None
+        if not fetch_result["success"]:
+            diagnosis = fetch_result.get("diagnosis", {})
+            logger.error(
+                "meta_ads_fetch_failed",
+                error=fetch_result.get("error"),
+                category=diagnosis.get("category"),
+                cause=diagnosis.get("probable_cause"),
+                fix=diagnosis.get("suggested_fix"),
+                attempts=fetch_result.get("attempts"),
+                fixes_tried=fetch_result.get("fixes_applied", [])
             )
 
-            # Note: MCP server returns summary with already-calculated totals
-            # Also campaigns[i]["insights"]["spend"] for per-campaign data
-            summary = campaigns.get("summary", {})
-
-            # Use summary if available, otherwise calculate from campaigns
-            if summary:
-                total_spend = summary.get("total_spend", 0)
-                total_clicks = summary.get("total_clicks", 0)
-                total_impressions = summary.get("total_impressions", 0)
-            else:
-                # Fallback: calculate from campaigns (insights is nested!)
-                # Note: insights can be None for campaigns without data, so use (c.get("insights") or {})
-                total_spend = sum(float((c.get("insights") or {}).get("spend", 0) or 0) for c in campaigns.get("campaigns", []))
-                total_clicks = sum(int((c.get("insights") or {}).get("clicks", 0) or 0) for c in campaigns.get("campaigns", []))
-                total_impressions = sum(int((c.get("insights") or {}).get("impressions", 0) or 0) for c in campaigns.get("campaigns", []))
-
-            # Reach is not in summary, calculate from campaign insights
-            # Note: insights can be None for campaigns without data, so use (c.get("insights") or {})
-            total_reach = sum(int((c.get("insights") or {}).get("reach", 0) or 0) for c in campaigns.get("campaigns", []))
-
-            # Build consolidated data
-            data = {
-                "source": "meta_ads",
-                "period_days": days,
-                "campaigns": campaigns.get("campaigns", []),
-                "adsets": adsets.get("adsets", []),
-                "ads": ads.get("ads", []),
-                "total_campaigns": campaigns.get("total_campaigns", len(campaigns.get("campaigns", []))),
-                "total_spend": total_spend,
-                "total_reach": total_reach,
-                "total_impressions": total_impressions,
-                "total_clicks": total_clicks,
-                "total_conversions": summary.get("conversions", 0),
-                "avg_cpm": summary.get("cpm", 0),
-                "avg_ctr": summary.get("avg_ctr", 0),  # MCP returns avg_ctr not ctr
-                "error": None
+            state["meta_ads_data"] = {
+                "source": source_name,
+                "error": fetch_result.get("error"),
+                "diagnosis": diagnosis
             }
-
-            # Check for errors
-            for i, r in enumerate(results):
-                if r.get("error"):
-                    data["error"] = f"Tool {i} error: {r['error']}"
-                    state["errors"].append(data["error"])
-                    break
-
-            state["meta_ads_data"] = data
-            state = self.add_step(state, "fetch_meta_ads")
-
-            # DIAGNOSTIC: Log final computed values
-            logger.info("meta_ads_final_data",
-                total_campaigns=data.get("total_campaigns"),
-                total_spend=data.get("total_spend"),
-                total_clicks=data.get("total_clicks"),
-                total_impressions=data.get("total_impressions"),
-                total_reach=data.get("total_reach"),
-                campaigns_list_count=len(data.get("campaigns", [])),
-                has_error=bool(data.get("error")),
-                error_msg=data.get("error")
+            state["errors"].append(fetch_result.get("error", "Unknown error"))
+            self.error_aggregator.add_error(
+                source_name,
+                fetch_result.get("error", "Unknown"),
+                attempts=fetch_result.get("attempts", 1),
+                fixes_tried=fetch_result.get("fixes_applied", [])
             )
+            state = self.add_step(state, "fetch_meta_ads")
+            return state
 
-            logger.info("meta_ads_fetched", days=days, brand=brand, has_error=bool(data.get("error")))
+        # Success - process results
+        results = fetch_result["data"]
+        campaigns = results[0] if len(results) > 0 else {}
+        adsets = results[1] if len(results) > 1 else {}
+        ads = results[2] if len(results) > 2 else {}
 
-        except Exception as e:
-            error_msg = f"Meta Ads fetch failed: {str(e)}"
-            state["meta_ads_data"] = {"error": error_msg}
-            state["errors"].append(error_msg)
-            logger.error("meta_ads_fetch_error", error=str(e))
+        # Use summary if available, otherwise calculate from campaigns
+        summary = campaigns.get("summary", {})
+        if summary:
+            total_spend = summary.get("total_spend", 0)
+            total_clicks = summary.get("total_clicks", 0)
+            total_impressions = summary.get("total_impressions", 0)
+        else:
+            total_spend = sum(float((c.get("insights") or {}).get("spend", 0) or 0) for c in campaigns.get("campaigns", []))
+            total_clicks = sum(int((c.get("insights") or {}).get("clicks", 0) or 0) for c in campaigns.get("campaigns", []))
+            total_impressions = sum(int((c.get("insights") or {}).get("impressions", 0) or 0) for c in campaigns.get("campaigns", []))
+
+        total_reach = sum(int((c.get("insights") or {}).get("reach", 0) or 0) for c in campaigns.get("campaigns", []))
+
+        data = {
+            "source": source_name,
+            "period_days": days,
+            "campaigns": campaigns.get("campaigns", []),
+            "adsets": adsets.get("adsets", []),
+            "ads": ads.get("ads", []),
+            "total_campaigns": campaigns.get("total_campaigns", len(campaigns.get("campaigns", []))),
+            "total_spend": total_spend,
+            "total_reach": total_reach,
+            "total_impressions": total_impressions,
+            "total_clicks": total_clicks,
+            "total_conversions": summary.get("conversions", 0),
+            "avg_cpm": summary.get("cpm", 0),
+            "avg_ctr": summary.get("avg_ctr", 0),
+            "error": None,
+            "fetch_attempts": fetch_result.get("attempts", 1),
+            "fixes_applied": fetch_result.get("fixes_applied", [])
+        }
+
+        self.error_aggregator.add_success(source_name)
+        state["meta_ads_data"] = data
+        state = self.add_step(state, "fetch_meta_ads")
+
+        logger.info(
+            "meta_ads_fetched",
+            days=days,
+            brand=brand,
+            total_campaigns=data.get("total_campaigns"),
+            total_spend=data.get("total_spend"),
+            attempts=fetch_result.get("attempts"),
+            wait_time=fetch_result.get("total_wait_time", 0)
+        )
 
         return state
 
     async def fetch_visitor_tracking_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
         """
-        Fetch custom visitor tracking data from PostgreSQL.
+        Fetch custom visitor tracking data from PostgreSQL with smart error handling.
 
         This is the BEST data source - our own tracking system!
-
-        Tables:
-        - visitors: Ziyaretci profilleri
-        - sessions: UTM, GCLID, landing page, referrer
-        - page_views: Sayfa goruntuleme + sure
-        - events: Custom event tracking
-        - conversions: Goal tamamlama
-        - google_ads_clicks: GCLID ile reklam eslestirme
-        - hourly_summaries: Onceden hesaplanmis saatlik ozet
-
-        CRITICAL: Use MEDIAN for time metrics, not AVERAGE!
         """
-        try:
-            days = state["days"]
-            brand = state["brand"]
+        source_name = "visitor_tracking"
+        days = state["days"]
+        brand = state["brand"]
 
-            # Get DB connection from environment
-            db_url = os.getenv("VISITOR_TRACKING_DATABASE_URL")
+        logger.info("Fetching visitor tracking data", days=days, brand=brand)
 
-            if db_url:
-                # Connect to PostgreSQL (Coolify DB doesn't require SSL)
-                conn = await asyncpg.connect(db_url)
-
-                try:
-                    # Date range
-                    end_date = datetime.now()
-                    start_date = end_date - timedelta(days=days)
-
-                    # Query sessions with UTM data
-                    sessions_query = """
-                        SELECT
-                            COUNT(*) as total_sessions,
-                            COUNT(DISTINCT visitor_id) as unique_visitors,
-                            COUNT(CASE WHEN utm_source IS NOT NULL THEN 1 END) as utm_sessions,
-                            COUNT(CASE WHEN gclid IS NOT NULL THEN 1 END) as gclid_sessions,
-                            COUNT(CASE WHEN fbclid IS NOT NULL THEN 1 END) as fbclid_sessions,
-                            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY total_time_ms / 1000.0) as median_session_duration
-                        FROM sessions
-                        WHERE started_at >= $1 AND started_at < $2
-                    """
-                    session_stats = await conn.fetchrow(sessions_query, start_date, end_date)
-
-                    # Query conversions with conversion type names
-                    conversions_query = """
-                        SELECT
-                            COUNT(*) as total_conversions,
-                            ct.name as goal_type,
-                            COUNT(*) as count
-                        FROM conversions c
-                        LEFT JOIN conversion_types ct ON c.conversion_type_id = ct.id
-                        WHERE c.created_at >= $1 AND c.created_at < $2
-                        GROUP BY ct.name
-                    """
-                    conversions = await conn.fetch(conversions_query, start_date, end_date)
-
-                    # Query top landing pages
-                    landing_pages_query = """
-                        SELECT
-                            landing_page,
-                            COUNT(*) as sessions,
-                            COUNT(DISTINCT visitor_id) as unique_visitors
-                        FROM sessions
-                        WHERE started_at >= $1 AND started_at < $2
-                        GROUP BY landing_page
-                        ORDER BY sessions DESC
-                        LIMIT 10
-                    """
-                    top_landing_pages = await conn.fetch(landing_pages_query, start_date, end_date)
-
-                    # Query traffic sources
-                    traffic_sources_query = """
-                        SELECT
-                            COALESCE(utm_source, 'direct') as source,
-                            COALESCE(utm_medium, 'none') as medium,
-                            COUNT(*) as sessions
-                        FROM sessions
-                        WHERE started_at >= $1 AND started_at < $2
-                        GROUP BY utm_source, utm_medium
-                        ORDER BY sessions DESC
-                        LIMIT 10
-                    """
-                    traffic_sources = await conn.fetch(traffic_sources_query, start_date, end_date)
-
-                    data = {
-                        "source": "visitor_tracking",
-                        "period_days": days,
-                        "total_sessions": session_stats["total_sessions"] if session_stats else 0,
-                        "unique_visitors": session_stats["unique_visitors"] if session_stats else 0,
-                        "utm_sessions": session_stats["utm_sessions"] if session_stats else 0,
-                        "gclid_sessions": session_stats["gclid_sessions"] if session_stats else 0,
-                        "fbclid_sessions": session_stats["fbclid_sessions"] if session_stats else 0,
-                        "median_session_duration": float(session_stats["median_session_duration"]) if session_stats and session_stats["median_session_duration"] else 0,
-                        "conversions": [dict(c) for c in conversions],
-                        "top_landing_pages": [dict(p) for p in top_landing_pages],
-                        "traffic_sources": [dict(s) for s in traffic_sources],
-                        "error": None
-                    }
-
-                finally:
-                    await conn.close()
-            else:
-                data = {
-                    "source": "visitor_tracking",
-                    "error": "Database URL not configured"
-                }
-
-            state["visitor_tracking_data"] = data
-            state = self.add_step(state, "fetch_visitor_tracking")
-
-            logger.info("visitor_tracking_fetched", days=days, sessions=data.get("total_sessions", 0))
-
-        except Exception as e:
-            error_msg = f"Visitor Tracking fetch failed: {str(e)}"
-            state["visitor_tracking_data"] = {"error": error_msg}
+        # Check config first
+        db_url = os.getenv("VISITOR_TRACKING_DATABASE_URL")
+        if not db_url:
+            error_msg = "VISITOR_TRACKING_DATABASE_URL env var not set"
+            state["visitor_tracking_data"] = {
+                "source": source_name,
+                "error": error_msg,
+                "diagnosis": {"category": "config_error", "probable_cause": "Eksik environment variable"}
+            }
             state["errors"].append(error_msg)
-            logger.error("visitor_tracking_fetch_error", error=str(e))
+            self.error_aggregator.add_error(source_name, error_msg)
+            state = self.add_step(state, "fetch_visitor_tracking")
+            return state
+
+        async def _fetch_visitor_data():
+            """Inner fetch function for smart retry wrapper."""
+            conn = await asyncpg.connect(db_url)
+            try:
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=days)
+
+                # Query sessions
+                sessions_query = """
+                    SELECT
+                        COUNT(*) as total_sessions,
+                        COUNT(DISTINCT visitor_id) as unique_visitors,
+                        COUNT(CASE WHEN utm_source IS NOT NULL THEN 1 END) as utm_sessions,
+                        COUNT(CASE WHEN gclid IS NOT NULL THEN 1 END) as gclid_sessions,
+                        COUNT(CASE WHEN fbclid IS NOT NULL THEN 1 END) as fbclid_sessions,
+                        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY total_time_ms / 1000.0) as median_session_duration
+                    FROM sessions
+                    WHERE started_at >= $1 AND started_at < $2
+                """
+                session_stats = await conn.fetchrow(sessions_query, start_date, end_date)
+
+                # Query conversions
+                conversions_query = """
+                    SELECT ct.name as goal_type, COUNT(*) as count
+                    FROM conversions c
+                    LEFT JOIN conversion_types ct ON c.conversion_type_id = ct.id
+                    WHERE c.created_at >= $1 AND c.created_at < $2
+                    GROUP BY ct.name
+                """
+                conversions = await conn.fetch(conversions_query, start_date, end_date)
+
+                # Query landing pages
+                landing_pages_query = """
+                    SELECT landing_page, COUNT(*) as sessions, COUNT(DISTINCT visitor_id) as unique_visitors
+                    FROM sessions
+                    WHERE started_at >= $1 AND started_at < $2
+                    GROUP BY landing_page ORDER BY sessions DESC LIMIT 10
+                """
+                top_landing_pages = await conn.fetch(landing_pages_query, start_date, end_date)
+
+                # Query traffic sources
+                traffic_sources_query = """
+                    SELECT COALESCE(utm_source, 'direct') as source, COALESCE(utm_medium, 'none') as medium, COUNT(*) as sessions
+                    FROM sessions
+                    WHERE started_at >= $1 AND started_at < $2
+                    GROUP BY utm_source, utm_medium ORDER BY sessions DESC LIMIT 10
+                """
+                traffic_sources = await conn.fetch(traffic_sources_query, start_date, end_date)
+
+                return {
+                    "total_sessions": session_stats["total_sessions"] if session_stats else 0,
+                    "unique_visitors": session_stats["unique_visitors"] if session_stats else 0,
+                    "utm_sessions": session_stats["utm_sessions"] if session_stats else 0,
+                    "gclid_sessions": session_stats["gclid_sessions"] if session_stats else 0,
+                    "fbclid_sessions": session_stats["fbclid_sessions"] if session_stats else 0,
+                    "median_session_duration": float(session_stats["median_session_duration"]) if session_stats and session_stats["median_session_duration"] else 0,
+                    "conversions": [dict(c) for c in conversions],
+                    "top_landing_pages": [dict(p) for p in top_landing_pages],
+                    "traffic_sources": [dict(s) for s in traffic_sources],
+                }
+            finally:
+                await conn.close()
+
+        # Smart fetch with retry for network errors
+        fetch_result = await fetch_with_smart_retry(
+            source_name=source_name,
+            fetch_func=_fetch_visitor_data,
+            context={},
+            max_retries=3,
+            circuit_threshold=5,
+            circuit_cooldown=120.0
+        )
+
+        if not fetch_result["success"]:
+            diagnosis = fetch_result.get("diagnosis", {})
+            logger.error(
+                "visitor_tracking_fetch_failed",
+                error=fetch_result.get("error"),
+                category=diagnosis.get("category"),
+                cause=diagnosis.get("probable_cause"),
+                attempts=fetch_result.get("attempts")
+            )
+
+            state["visitor_tracking_data"] = {
+                "source": source_name,
+                "error": fetch_result.get("error"),
+                "diagnosis": diagnosis
+            }
+            state["errors"].append(fetch_result.get("error", "Unknown error"))
+            self.error_aggregator.add_error(
+                source_name,
+                fetch_result.get("error", "Unknown"),
+                attempts=fetch_result.get("attempts", 1),
+                fixes_tried=fetch_result.get("fixes_applied", [])
+            )
+            state = self.add_step(state, "fetch_visitor_tracking")
+            return state
+
+        # Success
+        db_data = fetch_result["data"]
+        data = {
+            "source": source_name,
+            "period_days": days,
+            **db_data,
+            "error": None,
+            "fetch_attempts": fetch_result.get("attempts", 1)
+        }
+
+        self.error_aggregator.add_success(source_name)
+        state["visitor_tracking_data"] = data
+        state = self.add_step(state, "fetch_visitor_tracking")
+
+        logger.info(
+            "visitor_tracking_fetched",
+            days=days,
+            sessions=data.get("total_sessions", 0),
+            attempts=fetch_result.get("attempts")
+        )
 
         return state
 
     async def fetch_ga4_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
-        """Fetch Google Analytics 4 data via direct MCP tool call."""
-        try:
-            days = state["days"]
+        """Fetch Google Analytics 4 data with smart error handling."""
+        source_name = "ga4"
+        days = state["days"]
 
-            logger.info("Fetching GA4 data", days=days)
+        logger.info("Fetching GA4 data", days=days)
 
-            # Call MCP tool directly
-            result = await self._call_mcp_tool("analytics", "get_traffic_overview", {"days": days})
+        fetch_result = await fetch_with_smart_retry(
+            source_name=source_name,
+            fetch_func=lambda: self._call_mcp_tool("analytics", "get_traffic_overview", {"days": days}),
+            context={"mcp_dir": str(self._mcp_dir)},
+            max_retries=3,
+            circuit_threshold=5,
+            circuit_cooldown=120.0
+        )
 
-            # Build consolidated data
-            data = {
-                "source": "ga4",
-                "period_days": days,
-                "total_users": result.get("total_users", 0),
-                "new_users": result.get("new_users", 0),
-                "sessions": result.get("sessions", 0),
-                "page_views": result.get("page_views", 0),
-                "avg_session_duration": result.get("avg_session_duration", 0),
-                "bounce_rate": result.get("bounce_rate", 0),
-                "top_pages": result.get("top_pages", []),
-                "traffic_sources": result.get("traffic_sources", []),
-                "error": result.get("error")
-            }
+        if not fetch_result["success"]:
+            diagnosis = fetch_result.get("diagnosis", {})
+            logger.error("ga4_fetch_failed", error=fetch_result.get("error"), category=diagnosis.get("category"))
 
-            if data["error"]:
-                state["errors"].append(f"GA4 error: {data['error']}")
-
-            state["ga4_data"] = data
+            state["ga4_data"] = {"source": source_name, "error": fetch_result.get("error"), "diagnosis": diagnosis}
+            state["errors"].append(fetch_result.get("error", "Unknown error"))
+            self.error_aggregator.add_error(source_name, fetch_result.get("error", "Unknown"), attempts=fetch_result.get("attempts", 1))
             state = self.add_step(state, "fetch_ga4")
+            return state
 
-            logger.info("ga4_fetched", days=days, has_error=bool(data.get("error")))
+        result = fetch_result["data"]
+        data = {
+            "source": source_name,
+            "period_days": days,
+            "total_users": result.get("total_users", 0),
+            "new_users": result.get("new_users", 0),
+            "sessions": result.get("sessions", 0),
+            "page_views": result.get("page_views", 0),
+            "avg_session_duration": result.get("avg_session_duration", 0),
+            "bounce_rate": result.get("bounce_rate", 0),
+            "top_pages": result.get("top_pages", []),
+            "traffic_sources": result.get("traffic_sources", []),
+            "error": None,
+            "fetch_attempts": fetch_result.get("attempts", 1)
+        }
 
-        except Exception as e:
-            error_msg = f"GA4 fetch failed: {str(e)}"
-            state["ga4_data"] = {"error": error_msg}
-            state["errors"].append(error_msg)
-            logger.error("ga4_fetch_error", error=str(e))
+        self.error_aggregator.add_success(source_name)
+        state["ga4_data"] = data
+        state = self.add_step(state, "fetch_ga4")
+        logger.info("ga4_fetched", days=days, attempts=fetch_result.get("attempts"))
 
         return state
 
     async def fetch_search_console_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
-        """Fetch Search Console SEO data via direct MCP tool call."""
-        try:
-            days = state["days"]
+        """Fetch Search Console SEO data with smart error handling."""
+        source_name = "search_console"
+        days = state["days"]
 
-            logger.info("Fetching Search Console data", days=days)
+        logger.info("Fetching Search Console data", days=days)
 
-            # Call MCP tool directly
-            result = await self._call_mcp_tool("search-console", "get_search_analytics", {"days": days})
+        fetch_result = await fetch_with_smart_retry(
+            source_name=source_name,
+            fetch_func=lambda: self._call_mcp_tool("search-console", "get_search_analytics", {"days": days}),
+            context={"mcp_dir": str(self._mcp_dir)},
+            max_retries=3,
+            circuit_threshold=5,
+            circuit_cooldown=120.0
+        )
 
-            # Build consolidated data
-            data = {
-                "source": "search_console",
-                "period_days": days,
-                "total_clicks": result.get("total_clicks", 0),
-                "total_impressions": result.get("total_impressions", 0),
-                "avg_ctr": result.get("avg_ctr", 0),
-                "avg_position": result.get("avg_position", 0),
-                "top_queries": result.get("queries", [])[:20],
-                "top_pages": result.get("pages", [])[:20],
-                "error": result.get("error")
-            }
+        if not fetch_result["success"]:
+            diagnosis = fetch_result.get("diagnosis", {})
+            logger.error("search_console_fetch_failed", error=fetch_result.get("error"), category=diagnosis.get("category"))
 
-            if data["error"]:
-                state["errors"].append(f"Search Console error: {data['error']}")
-
-            state["search_console_data"] = data
+            state["search_console_data"] = {"source": source_name, "error": fetch_result.get("error"), "diagnosis": diagnosis}
+            state["errors"].append(fetch_result.get("error", "Unknown error"))
+            self.error_aggregator.add_error(source_name, fetch_result.get("error", "Unknown"), attempts=fetch_result.get("attempts", 1))
             state = self.add_step(state, "fetch_search_console")
+            return state
 
-            logger.info("search_console_fetched", days=days, has_error=bool(data.get("error")))
+        result = fetch_result["data"]
+        data = {
+            "source": source_name,
+            "period_days": days,
+            "total_clicks": result.get("total_clicks", 0),
+            "total_impressions": result.get("total_impressions", 0),
+            "avg_ctr": result.get("avg_ctr", 0),
+            "avg_position": result.get("avg_position", 0),
+            "top_queries": result.get("queries", [])[:20],
+            "top_pages": result.get("pages", [])[:20],
+            "error": None,
+            "fetch_attempts": fetch_result.get("attempts", 1)
+        }
 
-        except Exception as e:
-            error_msg = f"Search Console fetch failed: {str(e)}"
-            state["search_console_data"] = {"error": error_msg}
-            state["errors"].append(error_msg)
-            logger.error("search_console_fetch_error", error=str(e))
+        self.error_aggregator.add_success(source_name)
+        state["search_console_data"] = data
+        state = self.add_step(state, "fetch_search_console")
+        logger.info("search_console_fetched", days=days, attempts=fetch_result.get("attempts"))
 
         return state
 
     async def fetch_merchant_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
-        """Fetch Google Merchant Center data via direct MCP tool call."""
-        try:
-            days = state["days"]
+        """Fetch Google Merchant Center data with smart error handling."""
+        source_name = "merchant_center"
+        days = state["days"]
 
-            logger.info("Fetching Merchant Center data", days=days)
+        logger.info("Fetching Merchant Center data", days=days)
 
-            # Call MCP tools directly - use get_shopping_summary for complete data
-            # Note: get_account_summary doesn't exist! Use get_shopping_summary instead
-            results = await self._call_mcp_tools_batch("merchant-center", [
-                {"name": "get_shopping_summary", "arguments": {"days": days}},
-            ])
+        tools = [{"name": "get_shopping_summary", "arguments": {"days": days}}]
 
-            summary = results[0] if len(results) > 0 else {}
+        fetch_result = await fetch_with_smart_retry(
+            source_name=source_name,
+            fetch_func=lambda: self._call_mcp_tools_batch("merchant-center", tools),
+            context={"mcp_dir": str(self._mcp_dir)},
+            max_retries=3,
+            circuit_threshold=5,
+            circuit_cooldown=120.0
+        )
 
-            # Extract data from get_shopping_summary response structure:
-            # - performance_summary: {total_products, total_clicks, total_impressions, average_ctr}
-            # - health_summary: {products_checked, critical_issues, warnings, disapproved}
-            # - insights: {health_score, clicks_formatted, impressions_formatted}
-            perf = summary.get("performance_summary", {})
-            health = summary.get("health_summary", {})
-            insights = summary.get("insights", {})
+        if not fetch_result["success"]:
+            diagnosis = fetch_result.get("diagnosis", {})
+            logger.error("merchant_fetch_failed", error=fetch_result.get("error"), category=diagnosis.get("category"))
 
-            # Build consolidated data
-            data = {
-                "source": "merchant_center",
-                "period_days": days,
-                "total_products": perf.get("total_products", 0),
-                "approved_products": health.get("products_checked", 0) - health.get("disapproved", 0),
-                "disapproved_products": health.get("disapproved", 0),
-                "products_with_issues": health.get("critical_issues", 0) + health.get("warnings", 0),
-                "health_score": insights.get("health_score", 0),
-                "total_clicks": perf.get("total_clicks", 0),
-                "total_impressions": perf.get("total_impressions", 0),
-                "top_products": summary.get("top_products", [])[:20],
-                "issues": summary.get("top_issues", []),
-                "error": None
-            }
-
-            # Check for errors
-            for i, r in enumerate(results):
-                if r.get("error"):
-                    data["error"] = f"Tool {i} error: {r['error']}"
-                    state["errors"].append(data["error"])
-                    break
-
-            state["merchant_data"] = data
+            state["merchant_data"] = {"source": source_name, "error": fetch_result.get("error"), "diagnosis": diagnosis}
+            state["errors"].append(fetch_result.get("error", "Unknown error"))
+            self.error_aggregator.add_error(source_name, fetch_result.get("error", "Unknown"), attempts=fetch_result.get("attempts", 1))
             state = self.add_step(state, "fetch_merchant")
+            return state
 
-            logger.info("merchant_fetched", days=days, has_error=bool(data.get("error")))
+        results = fetch_result["data"]
+        summary = results[0] if len(results) > 0 else {}
 
-        except Exception as e:
-            error_msg = f"Merchant Center fetch failed: {str(e)}"
-            state["merchant_data"] = {"error": error_msg}
-            state["errors"].append(error_msg)
-            logger.error("merchant_fetch_error", error=str(e))
+        # NEW format: feed_summary has accurate product counts
+        feed_summary = summary.get("feed_summary", {})
+        perf = summary.get("performance_summary", {})
+        health = summary.get("health_summary", {})
+
+        data = {
+            "source": source_name,
+            "period_days": days,
+            "merchant_id": summary.get("merchant_id", "unknown"),
+            # Feed summary - ACCURATE product counts (pagination fixed)
+            "total_products": feed_summary.get("total_products_in_feed", 0),
+            "products_checked": feed_summary.get("products_checked", 0),
+            "approved_products": feed_summary.get("approved", 0),
+            "limited_products": feed_summary.get("limited", 0),
+            "disapproved_products": feed_summary.get("disapproved", 0),
+            "pending_products": feed_summary.get("pending", 0),
+            # Health metrics
+            "health_score": health.get("health_score", 0),
+            "critical_issues": health.get("critical_issues", 0),
+            "total_issues": health.get("total_issues", 0),
+            # Performance (only products with impressions/clicks)
+            "products_with_impressions": perf.get("products_with_impressions", 0),
+            "total_clicks": perf.get("total_clicks", 0),
+            "total_impressions": perf.get("total_impressions", 0),
+            "average_ctr": perf.get("average_ctr", 0),
+            # Issues
+            "top_issues": summary.get("top_issues", []),
+            "error": None,
+            "fetch_attempts": fetch_result.get("attempts", 1)
+        }
+
+        self.error_aggregator.add_success(source_name)
+        state["merchant_data"] = data
+        state = self.add_step(state, "fetch_merchant")
+        logger.info("merchant_fetched", days=days, attempts=fetch_result.get("attempts"))
 
         return state
 
     async def fetch_shopify_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
-        """Fetch Shopify orders and revenue data via direct MCP tool call."""
-        try:
-            days = state["days"]
-            brand = state["brand"]
+        """Fetch Shopify orders and revenue data with smart error handling."""
+        source_name = "shopify"
+        days = state["days"]
+        brand = state["brand"]
 
-            logger.info("Fetching Shopify data", days=days, brand=brand)
+        logger.info("Fetching Shopify data", days=days, brand=brand)
 
-            # Call MCP tools directly using batch
-            results = await self._call_mcp_tools_batch("shopify", [
-                {"name": "get_orders", "arguments": {"days": days}},
-                {"name": "get_products", "arguments": {"limit": 20}},
-            ])
+        tools = [
+            {"name": "get_orders", "arguments": {"days": days}},
+            {"name": "get_products", "arguments": {"limit": 20}},
+        ]
 
-            orders = results[0] if len(results) > 0 else {}
-            products = results[1] if len(results) > 1 else {}
+        fetch_result = await fetch_with_smart_retry(
+            source_name=source_name,
+            fetch_func=lambda: self._call_mcp_tools_batch("shopify", tools),
+            context={"mcp_dir": str(self._mcp_dir)},
+            max_retries=3,
+            circuit_threshold=5,
+            circuit_cooldown=120.0
+        )
 
-            # Calculate totals from orders
-            order_list = orders.get("orders", [])
-            total_revenue = sum(float(o.get("total_price", 0)) for o in order_list)
-            avg_order_value = total_revenue / len(order_list) if order_list else 0
+        if not fetch_result["success"]:
+            diagnosis = fetch_result.get("diagnosis", {})
+            logger.error("shopify_fetch_failed", error=fetch_result.get("error"), category=diagnosis.get("category"))
 
-            # Build consolidated data
-            data = {
-                "source": "shopify",
-                "period_days": days,
-                "total_orders": len(order_list),
-                "total_revenue": total_revenue,
-                "average_order_value": avg_order_value,
-                "new_customers": orders.get("new_customers", 0),
-                "returning_customers": orders.get("returning_customers", 0),
-                "top_products": products.get("products", [])[:20],
-                "abandoned_carts": orders.get("abandoned_checkouts", 0),
-                "error": None
-            }
-
-            # Check for errors
-            for i, r in enumerate(results):
-                if r.get("error"):
-                    data["error"] = f"Tool {i} error: {r['error']}"
-                    state["errors"].append(data["error"])
-                    break
-
-            state["shopify_data"] = data
+            state["shopify_data"] = {"source": source_name, "error": fetch_result.get("error"), "diagnosis": diagnosis}
+            state["errors"].append(fetch_result.get("error", "Unknown error"))
+            self.error_aggregator.add_error(source_name, fetch_result.get("error", "Unknown"), attempts=fetch_result.get("attempts", 1))
             state = self.add_step(state, "fetch_shopify")
+            return state
 
-            logger.info("shopify_fetched", days=days, brand=brand, has_error=bool(data.get("error")))
+        results = fetch_result["data"]
+        orders = results[0] if len(results) > 0 else {}
+        products = results[1] if len(results) > 1 else {}
 
-        except Exception as e:
-            error_msg = f"Shopify fetch failed: {str(e)}"
-            state["shopify_data"] = {"error": error_msg}
-            state["errors"].append(error_msg)
-            logger.error("shopify_fetch_error", error=str(e))
+        order_list = orders.get("orders", [])
+        total_revenue = sum(float(o.get("total_price", 0)) for o in order_list)
+        avg_order_value = total_revenue / len(order_list) if order_list else 0
+
+        data = {
+            "source": source_name,
+            "period_days": days,
+            "total_orders": len(order_list),
+            "total_revenue": total_revenue,
+            "average_order_value": avg_order_value,
+            "new_customers": orders.get("new_customers", 0),
+            "returning_customers": orders.get("returning_customers", 0),
+            "top_products": products.get("products", [])[:20],
+            "abandoned_carts": orders.get("abandoned_checkouts", 0),
+            "error": None,
+            "fetch_attempts": fetch_result.get("attempts", 1)
+        }
+
+        self.error_aggregator.add_success(source_name)
+        state["shopify_data"] = data
+        state = self.add_step(state, "fetch_shopify")
+        logger.info("shopify_fetched", days=days, brand=brand, attempts=fetch_result.get("attempts"))
 
         return state
 
     async def fetch_appointments_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
-        """Fetch appointment data from Afspraak-DB via direct MCP tool call."""
-        try:
-            days = state["days"]
-            brand = state["brand"]
+        """Fetch appointment data from Afspraak-DB with smart error handling."""
+        source_name = "appointments"
+        days = state["days"]
+        brand = state["brand"]
 
-            logger.info("Fetching Appointments data", days=days, brand=brand)
+        logger.info("Fetching Appointments data", days=days, brand=brand)
 
-            # Call MCP tools directly using batch
-            results = await self._call_mcp_tools_batch("afspraak-db", [
-                {"name": "get_appointments", "arguments": {"days": days}},
-                {"name": "get_appointment_stats", "arguments": {"days": days}},
-            ])
+        tools = [
+            {"name": "get_appointments", "arguments": {"days": days}},
+            {"name": "get_appointment_stats", "arguments": {"days": days}},
+        ]
 
-            appointments = results[0] if len(results) > 0 else {}
-            stats = results[1] if len(results) > 1 else {}
+        fetch_result = await fetch_with_smart_retry(
+            source_name=source_name,
+            fetch_func=lambda: self._call_mcp_tools_batch("afspraak-db", tools),
+            context={"mcp_dir": str(self._mcp_dir)},
+            max_retries=3,
+            circuit_threshold=5,
+            circuit_cooldown=120.0
+        )
 
-            # Build consolidated data
-            # Note: MCP server returns "total_appointments", "with_gclid", "with_fbclid"
-            data = {
-                "source": "afspraak_db",
-                "period_days": days,
-                "total_appointments": stats.get("total_appointments", 0),
-                "gclid_attributed": stats.get("with_gclid", 0),
-                "fbclid_attributed": stats.get("with_fbclid", 0),
-                "with_visitor_id": stats.get("with_visitor_id", 0),
-                "by_source": stats.get("by_source", []),
-                "appointments": appointments.get("appointments", []),
-                "error": None
-            }
+        if not fetch_result["success"]:
+            diagnosis = fetch_result.get("diagnosis", {})
+            logger.error("appointments_fetch_failed", error=fetch_result.get("error"), category=diagnosis.get("category"))
 
-            # Check for errors
-            for i, r in enumerate(results):
-                if r.get("error"):
-                    data["error"] = f"Tool {i} error: {r['error']}"
-                    state["errors"].append(data["error"])
-                    break
-
-            state["appointments_data"] = data
+            state["appointments_data"] = {"source": source_name, "error": fetch_result.get("error"), "diagnosis": diagnosis}
+            state["errors"].append(fetch_result.get("error", "Unknown error"))
+            self.error_aggregator.add_error(source_name, fetch_result.get("error", "Unknown"), attempts=fetch_result.get("attempts", 1))
             state = self.add_step(state, "fetch_appointments")
+            return state
 
-            logger.info("appointments_fetched", days=days, brand=brand, has_error=bool(data.get("error")))
+        results = fetch_result["data"]
+        appointments = results[0] if len(results) > 0 else {}
+        stats = results[1] if len(results) > 1 else {}
 
-        except Exception as e:
-            error_msg = f"Appointments fetch failed: {str(e)}"
-            state["appointments_data"] = {"error": error_msg}
-            state["errors"].append(error_msg)
-            logger.error("appointments_fetch_error", error=str(e))
+        data = {
+            "source": "afspraak_db",
+            "period_days": days,
+            "total_appointments": stats.get("total_appointments", 0),
+            "gclid_attributed": stats.get("with_gclid", 0),
+            "fbclid_attributed": stats.get("with_fbclid", 0),
+            "with_visitor_id": stats.get("with_visitor_id", 0),
+            "by_source": stats.get("by_source", []),
+            "appointments": appointments.get("appointments", []),
+            "error": None,
+            "fetch_attempts": fetch_result.get("attempts", 1)
+        }
+
+        self.error_aggregator.add_success(source_name)
+        state["appointments_data"] = data
+        state = self.add_step(state, "fetch_appointments")
+        logger.info("appointments_fetched", days=days, brand=brand, attempts=fetch_result.get("attempts"))
 
         return state
 
@@ -1354,11 +1480,31 @@ KURALLAR:
 
         Since each source report was already sent individually,
         this creates a concise executive summary with key metrics.
+
+        Also includes error diagnostics if there were failures.
         """
         try:
             days = state["days"]
             brand = state["brand"]
             today = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+            # Get error summary from aggregator
+            error_summary = self.error_aggregator.get_summary()
+
+            # If there are errors, send diagnostic message first
+            if error_summary["failed"] > 0:
+                diagnostic_msg = self.error_aggregator.format_for_telegram()
+                await self._send_source_telegram(
+                    "DIAGNOSTIC",
+                    "🔧",
+                    diagnostic_msg,
+                    source_index=0  # Before final summary
+                )
+                logger.warning(
+                    "diagnostic_sent",
+                    failed_sources=error_summary["failed"],
+                    successful_sources=error_summary["successful"]
+                )
 
             # Extract key metrics for summary
             ga = state.get("google_ads_data", {}) or {}
@@ -1376,10 +1522,13 @@ KURALLAR:
             total_appointments = int(ap.get("total_appointments", 0) or 0)
             roas = total_revenue / total_ad_spend if total_ad_spend > 0 else 0
 
-            # Count successful/failed sources
-            sources = [ga, ma, vt, state.get("ga4_data", {}), state.get("search_console_data", {}), mc, sh, ap]
-            success_count = sum(1 for s in sources if s and not s.get("error"))
-            error_count = sum(1 for s in sources if s and s.get("error"))
+            # Use error aggregator for accurate counts
+            success_count = error_summary["successful"]
+            error_count = error_summary["failed"]
+
+            # Get circuit breaker status
+            circuit_status = circuit_registry.get_all_status()
+            open_circuits = [name for name, status in circuit_status.items() if status.get("state") == "open"]
 
             # Build concise final summary
             final_report = f"""🎯 **FİNAL ÖZET** (9/9)
@@ -1407,16 +1556,20 @@ KURALLAR:
 • Harcama: €{ma.get('total_spend', 0):,.2f}
 • Reach: {ma.get('total_reach', 0):,}
 
-🛒 **MERCHANT HEALTH**
-• Skor: {mc.get('health_score', 0):.0f}%
-• Onaylı: {mc.get('approved_products', 0)} ürün
+🛒 **MERCHANT CENTER**
+• Toplam Ürün: {mc.get('total_products', 0):,}
+• Onaylı: {mc.get('approved_products', 0):,}
+• Reddedilen: {mc.get('disapproved_products', 0):,}
+• Health: {mc.get('health_score', 0):.1f}%
 
 ━━━━━━━━━━━━━━━━━━━━━━
 
 ✅ Başarılı: {success_count}/8 kaynak
 ❌ Hatalı: {error_count}/8 kaynak
+{"🔴 Devre Dışı: " + ", ".join(open_circuits) if open_circuits else ""}
 
-🤖 *Detaylı analizler yukarıdaki 8 mesajda.*
+🤖 *Detaylı analizler yukarıdaki mesajlarda.*
+{f"⚠️ *{error_count} kaynak hatalı - diagnostic mesajı gönderildi*" if error_count > 0 else ""}
 """
 
             state["report_markdown"] = final_report
@@ -1746,8 +1899,10 @@ Kisa ve oz yaz. Gereksiz detay verme."""
             # Merchant Center
             mc = sources.get("merchant_center", {})
             if mc and not mc.get("error"):
-                report += f"| Urun Sayisi | {mc.get('total_products', 0):,} |\n"
-                report += f"| Merchant Health | {mc.get('health_score', 0):.0f}% |\n"
+                report += f"| Toplam Urun | {mc.get('total_products', 0):,} |\n"
+                report += f"| Onayli Urun | {mc.get('approved_products', 0):,} |\n"
+                report += f"| Reddedilen | {mc.get('disapproved_products', 0):,} |\n"
+                report += f"| Merchant Health | {mc.get('health_score', 0):.1f}% |\n"
 
             # Appointments
             ap = sources.get("appointments", {})
