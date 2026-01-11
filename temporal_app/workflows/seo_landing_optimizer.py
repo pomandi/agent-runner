@@ -19,6 +19,7 @@ with workflow.unsafe.imports_passed_through():
         run_seo_optimizer_graph,
         get_existing_pages,
         save_page_config,
+        push_landing_page_to_git,
         trigger_coolify_deployment,
         save_seo_report,
         check_deployment_status,
@@ -177,15 +178,34 @@ class SEOLandingOptimizerWorkflow:
 
                 if save_result.get("success"):
                     workflow.logger.info(f"✅ Config saved: {save_result.get('file_path')}")
+
+                    # Step 5: Push to Git (if config saved)
+                    workflow.logger.info("📤 Step 5: Pushing to Git...")
+                    git_result = await workflow.execute_activity(
+                        push_landing_page_to_git,
+                        args=[save_result.get("file_path"), generated_config.get("slug")],
+                        start_to_close_timeout=timedelta(minutes=2),
+                        retry_policy=RetryPolicy(maximum_attempts=2),
+                    )
+                    result["steps_completed"].append("push_to_git")
+                    result["git_pushed"] = git_result.get("success", False)
+                    result["git_status"] = git_result.get("status")
+
+                    if git_result.get("success"):
+                        workflow.logger.info(f"✅ Git push successful: {git_result.get('status')}")
+                    else:
+                        result["errors"].append(f"Git push failed: {git_result.get('error')}")
+                        workflow.logger.error(f"❌ Git push failed: {git_result.get('error')}")
                 else:
                     result["errors"].append(f"Failed to save config: {save_result.get('error')}")
                     workflow.logger.error(f"❌ Failed to save config: {save_result.get('error')}")
 
-                # Step 5: Trigger deployment (if config saved and not skipped)
-                if result.get("config_saved") and not skip_deployment:
-                    workflow.logger.info("🚢 Step 5: Triggering Coolify deployment...")
+                # Step 6: Trigger deployment (if git pushed and not skipped)
+                if result.get("git_pushed") and not skip_deployment:
+                    workflow.logger.info("🚢 Step 6: Triggering Coolify deployment...")
                     deployment_result = await workflow.execute_activity(
                         trigger_coolify_deployment,
+                        args=[False],  # skip=False
                         start_to_close_timeout=timedelta(minutes=2),
                         retry_policy=RetryPolicy(maximum_attempts=3),
                     )

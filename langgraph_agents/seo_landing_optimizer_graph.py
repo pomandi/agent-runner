@@ -44,6 +44,17 @@ except ImportError as e:
     _mcp_import_error = str(e)
     logger.warning("mcp_sdk_not_available", error=str(e))
 
+# Claude Agent SDK imports (for LLM content generation)
+CLAUDE_SDK_AVAILABLE = False
+_claude_import_error = None
+
+try:
+    from claude_agent_sdk import query, ClaudeAgentOptions
+    CLAUDE_SDK_AVAILABLE = True
+except ImportError as e:
+    _claude_import_error = str(e)
+    logger.warning("claude_sdk_not_available", error=str(e))
+
 # Constants
 # Landing pages config path - can be set via env var for container deployment
 LANDING_PAGES_CONFIG_PATH = Path(os.getenv(
@@ -76,6 +87,122 @@ class SEOLandingOptimizerGraph(BaseAgentGraph):
         if server_path.exists():
             return server_path
         return None
+
+    async def _generate_content_with_llm(
+        self,
+        keyword: str,
+        template: str,
+        primary_lang: str
+    ) -> Dict[str, Any]:
+        """
+        Generate SEO-optimized landing page content using Claude LLM.
+
+        Args:
+            keyword: Target keyword (e.g., "trouwkostuum antwerpen")
+            template: Page template type (location, style, promo)
+            primary_lang: Primary language (nl, fr, en)
+
+        Returns:
+            Dict with generated content for all languages
+        """
+        if not CLAUDE_SDK_AVAILABLE:
+            logger.warning("claude_sdk_not_available_for_content", error=_claude_import_error)
+            return None
+
+        logger.info("llm_content_generation_start", keyword=keyword, template=template, lang=primary_lang)
+
+        prompt = f"""Je bent een SEO en content expert voor Pomandi, een premium maatpak merk in België en Nederland.
+
+Genereer landing page content voor het keyword: "{keyword}"
+
+MERK INFORMATIE:
+- Pomandi: Premium maatpakken en kostuums op maat
+- Prijzen: Vanaf €320
+- Locaties: België (Antwerpen) en Nederland
+- USP: 10+ jaar ervaring, persoonlijk advies, perfecte pasvorm
+
+TEMPLATE TYPE: {template}
+- location: Focus op stad/regio specifieke content
+- style: Focus op stijl/type pak (trouwpak, zakelijk, etc.)
+- promo: Focus op aanbieding/actie
+
+GENEREER CONTENT IN 3 TALEN (nl, fr, en):
+
+1. SEO TITLE (50-60 karakters per taal)
+2. META DESCRIPTION (150-160 karakters per taal)
+3. HERO TITLE (kort, krachtig)
+4. HERO SUBTITLE (1 zin)
+5. 3 FEATURES met:
+   - icon: (scissors, ruler, clock, star, shield, heart)
+   - title
+   - description (max 2 zinnen)
+6. 3 FAQ items met vraag en antwoord
+7. CTA tekst
+
+BELANGRIJK:
+- Content moet UNIEK zijn, geen generieke teksten
+- Gebruik het keyword natuurlijk in de tekst
+- Maak het overtuigend en professioneel
+- {primary_lang.upper()} is de primaire taal
+
+ANTWOORD IN JSON FORMAT:
+{{
+  "seo_title": {{"nl": "...", "fr": "...", "en": "..."}},
+  "seo_description": {{"nl": "...", "fr": "...", "en": "..."}},
+  "hero_title": {{"nl": "...", "fr": "...", "en": "..."}},
+  "hero_subtitle": {{"nl": "...", "fr": "...", "en": "..."}},
+  "features": [
+    {{
+      "icon": "scissors",
+      "title": {{"nl": "...", "fr": "...", "en": "..."}},
+      "description": {{"nl": "...", "fr": "...", "en": "..."}}
+    }},
+    ...
+  ],
+  "faq": [
+    {{
+      "question": {{"nl": "...", "fr": "...", "en": "..."}},
+      "answer": {{"nl": "...", "fr": "...", "en": "..."}}
+    }},
+    ...
+  ],
+  "cta_text": {{"nl": "...", "fr": "...", "en": "..."}}
+}}
+
+ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
+
+        try:
+            response_text = ""
+            async for msg in query(
+                prompt=prompt,
+                options=ClaudeAgentOptions(
+                    max_turns=1,
+                    permission_mode="bypassPermissions"
+                )
+            ):
+                if hasattr(msg, 'content'):
+                    for block in msg.content:
+                        if hasattr(block, 'text'):
+                            response_text += block.text
+
+            if not response_text:
+                logger.warning("llm_empty_response", keyword=keyword)
+                return None
+
+            # Parse JSON from response
+            # Try to extract JSON from response (might be wrapped in markdown)
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
+            if json_match:
+                content = json.loads(json_match.group())
+                logger.info("llm_content_generation_success", keyword=keyword, keys=list(content.keys()))
+                return content
+            else:
+                logger.error("llm_json_parse_failed", response=response_text[:500])
+                return None
+
+        except Exception as e:
+            logger.error("llm_content_generation_error", keyword=keyword, error=str(e))
+            return None
 
     async def _call_mcp_tool(
         self,
@@ -524,7 +651,8 @@ class SEOLandingOptimizerGraph(BaseAgentGraph):
         """
         Node 5: Generate landing page configuration.
 
-        Creates PageConfig JSON with SEO-optimized content.
+        Creates PageConfig JSON with SEO-optimized content using LLM.
+        Falls back to template-based generation if LLM is unavailable.
         """
         logger.info("generate_page_config_start")
 
@@ -533,7 +661,7 @@ class SEOLandingOptimizerGraph(BaseAgentGraph):
             template = state.get("selected_template", "location")
             slug = self._generate_slug(keyword)
 
-            # Determine channels based on language
+            # Determine channels and language based on keyword
             if any(fr_word in keyword.lower() for fr_word in ["costume", "mariage", "homme", "bruxelles", "liège"]):
                 channels = ["belgium-channel"]
                 primary_lang = "fr"
@@ -544,9 +672,64 @@ class SEOLandingOptimizerGraph(BaseAgentGraph):
                 channels = ["belgium-channel", "netherlands-channel"]
                 primary_lang = "nl"
 
-            # Generate SEO content
-            seo_title = self._generate_seo_title(keyword, primary_lang)
-            seo_description = self._generate_seo_description(keyword, primary_lang)
+            # Try to generate content with LLM first
+            llm_content = await self._generate_content_with_llm(keyword, template, primary_lang)
+            used_llm = llm_content is not None
+
+            if llm_content:
+                logger.info("using_llm_generated_content", keyword=keyword)
+                # Use LLM-generated content
+                seo_title = llm_content.get("seo_title", self._generate_seo_title(keyword, primary_lang))
+                seo_description = llm_content.get("seo_description", self._generate_seo_description(keyword, primary_lang))
+                hero_title = llm_content.get("hero_title", self._generate_hero_title(keyword))
+                hero_subtitle = llm_content.get("hero_subtitle", self._generate_hero_subtitle(keyword))
+                cta_text = llm_content.get("cta_text", {
+                    "nl": "Maak een afspraak",
+                    "fr": "Prenez rendez-vous",
+                    "en": "Book appointment"
+                })
+
+                # Build sections from LLM content
+                sections = []
+
+                # Features section from LLM
+                if llm_content.get("features"):
+                    sections.append({
+                        "type": "features",
+                        "title": {
+                            "nl": "Waarom Pomandi?",
+                            "fr": "Pourquoi Pomandi?",
+                            "en": "Why Pomandi?"
+                        },
+                        "items": llm_content["features"]
+                    })
+                else:
+                    sections.extend(self._generate_sections(keyword, template))
+
+                # FAQ section from LLM
+                if llm_content.get("faq"):
+                    sections.append({
+                        "type": "faq",
+                        "title": {
+                            "nl": "Veelgestelde vragen",
+                            "fr": "Questions fréquentes",
+                            "en": "FAQ"
+                        },
+                        "items": llm_content["faq"]
+                    })
+            else:
+                logger.info("using_template_content", keyword=keyword, reason="LLM unavailable or failed")
+                # Fallback to template-based content
+                seo_title = self._generate_seo_title(keyword, primary_lang)
+                seo_description = self._generate_seo_description(keyword, primary_lang)
+                hero_title = self._generate_hero_title(keyword)
+                hero_subtitle = self._generate_hero_subtitle(keyword)
+                cta_text = {
+                    "nl": "Maak een afspraak",
+                    "fr": "Prenez rendez-vous",
+                    "en": "Book appointment"
+                }
+                sections = self._generate_sections(keyword, template)
 
             config = {
                 "slug": slug,
@@ -566,27 +749,27 @@ class SEOLandingOptimizerGraph(BaseAgentGraph):
                     "ogImage": "/1.png"
                 },
                 "hero": {
-                    "title": self._generate_hero_title(keyword),
-                    "subtitle": self._generate_hero_subtitle(keyword),
+                    "title": hero_title,
+                    "subtitle": hero_subtitle,
                     "image": "/hero.jpg",
                     "cta": {
-                        "text": {
-                            "nl": "Maak een afspraak",
-                            "fr": "Prenez rendez-vous",
-                            "en": "Book appointment"
-                        },
+                        "text": cta_text,
                         "link": f"/{primary_lang}/afspraak"
                     }
                 },
-                "sections": self._generate_sections(keyword, template),
-                "campaign": f"seo-{slug}-{datetime.now().strftime('%Y%m')}"
+                "sections": sections,
+                "campaign": f"seo-{slug}-{datetime.now().strftime('%Y%m')}",
+                "generated_by": "llm" if used_llm else "template",
+                "generated_at": datetime.now().isoformat()
             }
 
             state["generated_config"] = config
+            state["content_source"] = "llm" if used_llm else "template"
             state = self.add_step(state, "generate_page_config")
-            logger.info("generate_page_config_complete", slug=slug)
+            logger.info("generate_page_config_complete", slug=slug, source="llm" if used_llm else "template")
 
         except Exception as e:
+            logger.error("generate_page_config_error", error=str(e))
             state = self.set_error(state, f"Failed to generate page config: {e}")
 
         return state
