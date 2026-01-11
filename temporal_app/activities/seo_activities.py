@@ -29,33 +29,222 @@ async def fetch_search_console_data(days: int = 28) -> Dict[str, Any]:
 
     Returns:
         Dictionary with keyword opportunities, top queries, pages, etc.
+        Includes detailed error info if fetch fails.
     """
+    import os
+    import traceback
+
     activity.logger.info(f"Fetching Search Console data for last {days} days")
     start_time = time.time()
 
+    result = {
+        "keyword_opportunities": [],
+        "top_queries": [],
+        "top_pages": [],
+        "position_distribution": {},
+        "seo_summary": None,
+        "date_range": {
+            "days": days,
+            "fetched_at": datetime.now().isoformat()
+        },
+        "fetch_status": "pending",
+        "errors": []
+    }
+
     try:
-        # In production, this would use the Search Console MCP client
-        # For now, return placeholder structure that SDK agent will populate
-        result = {
-            "keyword_opportunities": [],
-            "top_queries": [],
-            "top_pages": [],
-            "position_distribution": {},
-            "seo_summary": None,
-            "date_range": {
-                "days": days,
-                "fetched_at": datetime.now().isoformat()
-            }
-        }
+        # Check if MCP SDK is available
+        try:
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
+        except ImportError as e:
+            result["fetch_status"] = "error"
+            result["errors"].append({
+                "type": "DEPENDENCY_ERROR",
+                "message": f"MCP SDK not available: {e}",
+                "suggestion": "Install: pip install mcp"
+            })
+            activity.logger.error(f"MCP SDK not available: {e}")
+            return result
+
+        # Check credentials
+        google_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+        google_path = os.getenv("GOOGLE_CREDENTIALS_PATH")
+
+        if not google_json and not google_path:
+            result["fetch_status"] = "error"
+            result["errors"].append({
+                "type": "CREDENTIALS_ERROR",
+                "message": "Google credentials not configured",
+                "env_vars": {
+                    "GOOGLE_CREDENTIALS_JSON": "NOT_SET",
+                    "GOOGLE_CREDENTIALS_PATH": "NOT_SET"
+                },
+                "suggestion": "Set GOOGLE_CREDENTIALS_JSON or GOOGLE_CREDENTIALS_PATH env var"
+            })
+            activity.logger.error("Google credentials not configured")
+            return result
+
+        # Find MCP server
+        mcp_paths = [
+            Path("/app/mcp-servers/search-console/server.py"),
+            Path("/home/claude/.claude/agents/agent-runner/mcp-servers/search-console/server.py")
+        ]
+        server_path = None
+        for p in mcp_paths:
+            if p.exists():
+                server_path = p
+                break
+
+        if not server_path:
+            result["fetch_status"] = "error"
+            result["errors"].append({
+                "type": "SERVER_NOT_FOUND",
+                "message": "Search Console MCP server not found",
+                "searched_paths": [str(p) for p in mcp_paths]
+            })
+            activity.logger.error("Search Console MCP server not found")
+            return result
+
+        # Call MCP server
+        activity.logger.info(f"Connecting to MCP server: {server_path}")
+
+        server_params = StdioServerParameters(
+            command="python3",
+            args=[str(server_path)],
+            env=os.environ.copy()  # Pass environment variables!
+        )
+
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                activity.logger.info("MCP session initialized")
+
+                # Fetch keyword opportunities
+                activity.logger.info("Fetching keyword opportunities...")
+                try:
+                    opp_result = await session.call_tool(
+                        "get_keyword_opportunities",
+                        {"days": days, "min_impressions": 50}
+                    )
+                    if opp_result.content:
+                        for content in opp_result.content:
+                            if hasattr(content, 'text'):
+                                data = json.loads(content.text)
+                                if "error" not in str(data).lower()[:100]:
+                                    result["keyword_opportunities"] = data.get("opportunities", {})
+                                else:
+                                    result["errors"].append({"tool": "get_keyword_opportunities", "error": data})
+                except Exception as e:
+                    result["errors"].append({"tool": "get_keyword_opportunities", "error": str(e)})
+                    activity.logger.warning(f"get_keyword_opportunities failed: {e}")
+
+                # Fetch top queries
+                activity.logger.info("Fetching top queries...")
+                try:
+                    queries_result = await session.call_tool(
+                        "get_top_queries",
+                        {"days": days, "limit": 100}
+                    )
+                    if queries_result.content:
+                        for content in queries_result.content:
+                            if hasattr(content, 'text'):
+                                data = json.loads(content.text)
+                                if "error" not in str(data).lower()[:100]:
+                                    result["top_queries"] = data.get("queries", [])
+                                else:
+                                    result["errors"].append({"tool": "get_top_queries", "error": data})
+                except Exception as e:
+                    result["errors"].append({"tool": "get_top_queries", "error": str(e)})
+                    activity.logger.warning(f"get_top_queries failed: {e}")
+
+                # Fetch top pages
+                activity.logger.info("Fetching top pages...")
+                try:
+                    pages_result = await session.call_tool(
+                        "get_top_pages",
+                        {"days": days, "limit": 50}
+                    )
+                    if pages_result.content:
+                        for content in pages_result.content:
+                            if hasattr(content, 'text'):
+                                data = json.loads(content.text)
+                                if "error" not in str(data).lower()[:100]:
+                                    result["top_pages"] = data.get("pages", [])
+                                else:
+                                    result["errors"].append({"tool": "get_top_pages", "error": data})
+                except Exception as e:
+                    result["errors"].append({"tool": "get_top_pages", "error": str(e)})
+                    activity.logger.warning(f"get_top_pages failed: {e}")
+
+                # Fetch position distribution
+                activity.logger.info("Fetching position distribution...")
+                try:
+                    pos_result = await session.call_tool(
+                        "get_position_distribution",
+                        {"days": days}
+                    )
+                    if pos_result.content:
+                        for content in pos_result.content:
+                            if hasattr(content, 'text'):
+                                data = json.loads(content.text)
+                                if "error" not in str(data).lower()[:100]:
+                                    result["position_distribution"] = data.get("position_distribution", {})
+                                else:
+                                    result["errors"].append({"tool": "get_position_distribution", "error": data})
+                except Exception as e:
+                    result["errors"].append({"tool": "get_position_distribution", "error": str(e)})
+                    activity.logger.warning(f"get_position_distribution failed: {e}")
+
+                # Fetch SEO summary
+                activity.logger.info("Fetching SEO summary...")
+                try:
+                    summary_result = await session.call_tool(
+                        "get_seo_summary",
+                        {"days": days}
+                    )
+                    if summary_result.content:
+                        for content in summary_result.content:
+                            if hasattr(content, 'text'):
+                                data = json.loads(content.text)
+                                if "error" not in str(data).lower()[:100]:
+                                    result["seo_summary"] = data
+                                else:
+                                    result["errors"].append({"tool": "get_seo_summary", "error": data})
+                except Exception as e:
+                    result["errors"].append({"tool": "get_seo_summary", "error": str(e)})
+                    activity.logger.warning(f"get_seo_summary failed: {e}")
+
+        # Determine fetch status
+        if result["errors"]:
+            if result["top_queries"] or result["keyword_opportunities"]:
+                result["fetch_status"] = "partial"
+            else:
+                result["fetch_status"] = "error"
+        else:
+            result["fetch_status"] = "success"
 
         duration = time.time() - start_time
-        activity.logger.info(f"Search Console data fetched in {duration:.2f}s")
+        result["fetch_duration_seconds"] = round(duration, 2)
+
+        activity.logger.info(
+            f"Search Console data fetched in {duration:.2f}s - "
+            f"status={result['fetch_status']}, "
+            f"queries={len(result['top_queries'])}, "
+            f"opportunities={len(result.get('keyword_opportunities', {}).get('position_4_to_10', []))}, "
+            f"errors={len(result['errors'])}"
+        )
 
         return result
 
     except Exception as e:
+        result["fetch_status"] = "error"
+        result["errors"].append({
+            "type": "UNEXPECTED_ERROR",
+            "message": str(e),
+            "traceback": traceback.format_exc()[-500:]
+        })
         activity.logger.error(f"Failed to fetch Search Console data: {e}")
-        raise
+        return result
 
 
 @activity.defn

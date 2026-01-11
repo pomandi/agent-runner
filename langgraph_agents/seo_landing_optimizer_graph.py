@@ -87,25 +87,42 @@ class SEOLandingOptimizerGraph(BaseAgentGraph):
             arguments: Arguments to pass to the tool
 
         Returns:
-            Dict with tool result or error
+            Dict with tool result or error (detailed error info for LLM)
         """
+        import os
+        import traceback
+
         if not MCP_SDK_AVAILABLE:
-            logger.error("MCP SDK not available")
-            return {"error": "MCP SDK not available"}
+            error_detail = {
+                "error": "MCP SDK not available",
+                "error_type": "DEPENDENCY_ERROR",
+                "import_error": str(_mcp_import_error) if _mcp_import_error else "Unknown",
+                "suggestion": "Install MCP SDK: pip install mcp"
+            }
+            logger.error("mcp_sdk_not_available", **error_detail)
+            return error_detail
 
         server_path = self._get_server_path(server_name)
         if not server_path:
-            return {"error": f"MCP server '{server_name}' not found"}
+            error_detail = {
+                "error": f"MCP server '{server_name}' not found",
+                "error_type": "SERVER_NOT_FOUND",
+                "searched_path": str(self._mcp_dir / server_name / "server.py"),
+                "available_servers": [d.name for d in self._mcp_dir.iterdir() if d.is_dir()] if self._mcp_dir.exists() else []
+            }
+            logger.error("mcp_server_not_found", **error_detail)
+            return error_detail
 
         try:
-            # Create server parameters
+            # Create server parameters with INHERITED ENVIRONMENT
+            # This is critical for passing credentials (GOOGLE_CREDENTIALS_JSON etc.)
             server_params = StdioServerParameters(
                 command="python3",
                 args=[str(server_path)],
-                env=None
+                env=os.environ.copy()  # IMPORTANT: Pass environment variables!
             )
 
-            logger.info("mcp_connecting", server=server_name)
+            logger.info("mcp_connecting", server=server_name, path=str(server_path))
 
             async with stdio_client(server_params) as (read, write):
                 async with ClientSession(read, write) as session:
@@ -113,7 +130,7 @@ class SEOLandingOptimizerGraph(BaseAgentGraph):
                     logger.info("mcp_session_initialized", server=server_name)
 
                     # Call tool
-                    logger.debug("mcp_tool_calling", server=server_name, tool=tool_name)
+                    logger.debug("mcp_tool_calling", server=server_name, tool=tool_name, args=arguments)
                     result = await session.call_tool(tool_name, arguments)
                     logger.debug("mcp_tool_success", server=server_name, tool=tool_name)
 
@@ -122,15 +139,49 @@ class SEOLandingOptimizerGraph(BaseAgentGraph):
                         for content in result.content:
                             if hasattr(content, 'text'):
                                 try:
-                                    return json.loads(content.text)
+                                    parsed = json.loads(content.text)
+                                    # Check if MCP server returned an error
+                                    if isinstance(parsed, dict) and "Error:" in str(parsed.get("error", "")):
+                                        return {
+                                            "error": parsed.get("error", content.text),
+                                            "error_type": "MCP_SERVER_ERROR",
+                                            "server": server_name,
+                                            "tool": tool_name,
+                                            "raw_response": content.text[:500]
+                                        }
+                                    return parsed
                                 except json.JSONDecodeError:
+                                    # Check if it's an error message
+                                    if content.text.startswith("Error:"):
+                                        return {
+                                            "error": content.text,
+                                            "error_type": "MCP_SERVER_ERROR",
+                                            "server": server_name,
+                                            "tool": tool_name
+                                        }
                                     return {"result": content.text}
 
-                    return {"result": "No content returned"}
+                    return {
+                        "error": "No content returned from MCP server",
+                        "error_type": "EMPTY_RESPONSE",
+                        "server": server_name,
+                        "tool": tool_name
+                    }
 
         except Exception as e:
-            logger.error("mcp_tool_error", server=server_name, tool=tool_name, error=str(e))
-            return {"error": str(e)}
+            error_detail = {
+                "error": str(e),
+                "error_type": "MCP_CALL_ERROR",
+                "server": server_name,
+                "tool": tool_name,
+                "traceback": traceback.format_exc()[-500:],  # Last 500 chars of traceback
+                "env_check": {
+                    "GOOGLE_CREDENTIALS_JSON": "SET" if os.getenv("GOOGLE_CREDENTIALS_JSON") else "NOT_SET",
+                    "GOOGLE_CREDENTIALS_PATH": os.getenv("GOOGLE_CREDENTIALS_PATH", "NOT_SET")
+                }
+            }
+            logger.error("mcp_tool_error", **error_detail)
+            return error_detail
 
     def build_graph(self) -> StateGraph:
         """Build the SEO optimizer workflow graph."""
