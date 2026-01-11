@@ -14,7 +14,7 @@ Workflow:
 7. Generate report
 
 Author: Claude
-Version: 1.0.0
+Version: 1.1.0 - Added MCP integration
 """
 
 import json
@@ -30,6 +30,18 @@ from .base_graph import BaseAgentGraph
 from .state_schemas import SEOLandingOptimizerState, init_seo_landing_optimizer_state
 
 logger = structlog.get_logger(__name__)
+
+# MCP SDK imports (with fallback)
+MCP_SDK_AVAILABLE = False
+_mcp_import_error = None
+
+try:
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    MCP_SDK_AVAILABLE = True
+except ImportError as e:
+    _mcp_import_error = str(e)
+    logger.warning("mcp_sdk_not_available", error=str(e))
 
 # Constants
 LANDING_PAGES_CONFIG_PATH = Path("/home/claude/projects/sale-v2/pomandi-landing-pages/src/config/pages")
@@ -50,6 +62,75 @@ class SEOLandingOptimizerGraph(BaseAgentGraph):
         super().__init__(enable_memory=True, **kwargs)
         self.search_console_client = None
         self.coolify_client = None
+        # MCP servers directory
+        self._mcp_dir = Path("/app/mcp-servers") if Path("/app/mcp-servers").exists() else Path("/home/claude/.claude/agents/agent-runner/mcp-servers")
+
+    def _get_server_path(self, server_name: str) -> Optional[Path]:
+        """Get path to MCP server script."""
+        server_path = self._mcp_dir / server_name / "server.py"
+        if server_path.exists():
+            return server_path
+        return None
+
+    async def _call_mcp_tool(
+        self,
+        server_name: str,
+        tool_name: str,
+        arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Call an MCP server tool directly using MCP Python SDK.
+
+        Args:
+            server_name: Name of the MCP server (e.g., 'search-console')
+            tool_name: Name of the tool to call (e.g., 'get_keyword_opportunities')
+            arguments: Arguments to pass to the tool
+
+        Returns:
+            Dict with tool result or error
+        """
+        if not MCP_SDK_AVAILABLE:
+            logger.error("MCP SDK not available")
+            return {"error": "MCP SDK not available"}
+
+        server_path = self._get_server_path(server_name)
+        if not server_path:
+            return {"error": f"MCP server '{server_name}' not found"}
+
+        try:
+            # Create server parameters
+            server_params = StdioServerParameters(
+                command="python3",
+                args=[str(server_path)],
+                env=None
+            )
+
+            logger.info("mcp_connecting", server=server_name)
+
+            async with stdio_client(server_params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    logger.info("mcp_session_initialized", server=server_name)
+
+                    # Call tool
+                    logger.debug("mcp_tool_calling", server=server_name, tool=tool_name)
+                    result = await session.call_tool(tool_name, arguments)
+                    logger.debug("mcp_tool_success", server=server_name, tool=tool_name)
+
+                    # Parse result
+                    if result.content:
+                        for content in result.content:
+                            if hasattr(content, 'text'):
+                                try:
+                                    return json.loads(content.text)
+                                except json.JSONDecodeError:
+                                    return {"result": content.text}
+
+                    return {"result": "No content returned"}
+
+        except Exception as e:
+            logger.error("mcp_tool_error", server=server_name, tool=tool_name, error=str(e))
+            return {"error": str(e)}
 
     def build_graph(self) -> StateGraph:
         """Build the SEO optimizer workflow graph."""
@@ -119,21 +200,95 @@ class SEOLandingOptimizerGraph(BaseAgentGraph):
         logger.info("fetch_search_console_data_start")
 
         try:
-            # In real implementation, these would be MCP tool calls
-            # For now, we'll create placeholder structure
-            # The SDK runner will handle actual MCP calls
+            days = 28  # Default to 28 days
 
+            # Fetch keyword opportunities from Search Console MCP
+            logger.info("fetching_keyword_opportunities", days=days)
+            opportunities_result = await self._call_mcp_tool(
+                "search-console",
+                "get_keyword_opportunities",
+                {"days": days, "min_impressions": 50, "position_range": "4-20"}
+            )
+
+            if "error" in opportunities_result:
+                logger.warning("keyword_opportunities_error", error=opportunities_result["error"])
+                state["keyword_opportunities"] = []
+            else:
+                state["keyword_opportunities"] = opportunities_result.get("opportunities", [])
+
+            # Fetch top queries
+            logger.info("fetching_top_queries", days=days)
+            queries_result = await self._call_mcp_tool(
+                "search-console",
+                "get_top_queries",
+                {"days": days, "limit": 100}
+            )
+
+            if "error" in queries_result:
+                logger.warning("top_queries_error", error=queries_result["error"])
+                state["top_queries"] = []
+            else:
+                # Extract queries from result
+                queries = queries_result.get("queries", queries_result.get("rows", []))
+                state["top_queries"] = queries
+
+            # Fetch top pages
+            logger.info("fetching_top_pages", days=days)
+            pages_result = await self._call_mcp_tool(
+                "search-console",
+                "get_top_pages",
+                {"days": days, "limit": 50}
+            )
+
+            if "error" in pages_result:
+                logger.warning("top_pages_error", error=pages_result["error"])
+                state["top_pages"] = []
+            else:
+                state["top_pages"] = pages_result.get("pages", pages_result.get("rows", []))
+
+            # Fetch position distribution
+            logger.info("fetching_position_distribution", days=days)
+            position_result = await self._call_mcp_tool(
+                "search-console",
+                "get_position_distribution",
+                {"days": days}
+            )
+
+            if "error" in position_result:
+                logger.warning("position_distribution_error", error=position_result["error"])
+                state["position_distribution"] = {}
+            else:
+                state["position_distribution"] = position_result.get("distribution", {})
+
+            # Fetch SEO summary
+            logger.info("fetching_seo_summary", days=days)
+            summary_result = await self._call_mcp_tool(
+                "search-console",
+                "get_seo_summary",
+                {"days": days}
+            )
+
+            if "error" in summary_result:
+                logger.warning("seo_summary_error", error=summary_result["error"])
+                state["seo_summary"] = None
+            else:
+                state["seo_summary"] = summary_result
+
+            state = self.add_step(state, "fetch_search_console_data")
+            logger.info("fetch_search_console_data_complete",
+                       opportunities=len(state.get("keyword_opportunities", [])),
+                       queries=len(state.get("top_queries", [])),
+                       pages=len(state.get("top_pages", [])))
+
+        except Exception as e:
+            logger.error("fetch_search_console_data_error", error=str(e))
+            state = self.set_error(state, f"Failed to fetch Search Console data: {e}")
+            # Set empty defaults so workflow can continue
             state["keyword_opportunities"] = []
             state["top_queries"] = []
             state["top_pages"] = []
             state["position_distribution"] = {}
             state["seo_summary"] = None
-
-            state = self.add_step(state, "fetch_search_console_data")
-            logger.info("fetch_search_console_data_complete")
-
-        except Exception as e:
-            state = self.set_error(state, f"Failed to fetch Search Console data: {e}")
 
         return state
 
