@@ -20,6 +20,7 @@ class CollectionName(str, Enum):
     AGENT_CONTEXT = "agent_context"
     EMAIL_PATTERNS = "email_patterns"
     EMAIL_CONVERSATIONS = "email_conversations"
+    SEO_STRATEGIES = "seo_strategies"
 
 
 # Collection configurations with vector params and schema
@@ -130,6 +131,27 @@ COLLECTION_CONFIGS: Dict[CollectionName, Dict[str, Any]] = {
             "created_at": "str"  # ISO datetime
         },
         "description": "Email conversation history for context-aware responses"
+    },
+
+    CollectionName.SEO_STRATEGIES: {
+        "vectors_config": VectorParams(
+            size=1536,
+            distance=Distance.COSINE
+        ),
+        "schema": {
+            "keyword": "str",  # Target keyword
+            "slug": "str",  # Generated page slug
+            "template": "str",  # location, style, promo
+            "generated_date": "str",  # ISO date
+            "search_console_position": "float",  # Position at generation time
+            "search_console_impressions": "int",  # Impressions at generation time
+            "current_position": "float",  # Latest position (updated weekly)
+            "current_clicks": "int",  # Latest weekly clicks
+            "performance_trend": "str",  # "improving", "stable", "declining"
+            "optimization_notes": "str",  # Recommendations
+            "created_at": "str"  # ISO datetime
+        },
+        "description": "SEO landing page strategies and performance tracking"
     }
 }
 

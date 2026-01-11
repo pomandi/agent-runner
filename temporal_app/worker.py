@@ -19,6 +19,7 @@ from temporal_app.workflows.feed_publisher import FeedPublisherWorkflow
 from temporal_app.workflows.appointment_collector import AppointmentCollectorWorkflow
 from temporal_app.workflows.daily_analytics import DailyAnalyticsWorkflow, WeeklyAnalyticsWorkflow
 from temporal_app.workflows.email_assistant_workflow import EmailAssistantWorkflow, DailyEmailSummaryWorkflow
+from temporal_app.workflows.seo_landing_optimizer import SEOLandingOptimizerWorkflow, SEOWeeklyReportWorkflow
 
 # Import activities
 from temporal_app.activities.social_media import (
@@ -46,6 +47,15 @@ from temporal_app.activities.email_activities import (
     send_daily_email_summary,
     run_email_assistant_check,
     process_pending_approvals,
+)
+from temporal_app.activities.seo_activities import (
+    fetch_search_console_data,
+    run_seo_optimizer_graph,
+    get_existing_pages,
+    save_page_config,
+    trigger_coolify_deployment,
+    save_seo_report,
+    check_deployment_status,
 )
 
 logging.basicConfig(
@@ -83,6 +93,8 @@ async def run_worker():
         WeeklyAnalyticsWorkflow,
         EmailAssistantWorkflow,
         DailyEmailSummaryWorkflow,
+        SEOLandingOptimizerWorkflow,
+        SEOWeeklyReportWorkflow,
     ]
 
     activities = [
@@ -107,6 +119,14 @@ async def run_worker():
         send_daily_email_summary,
         run_email_assistant_check,
         process_pending_approvals,
+        # SEO Landing Optimizer activities
+        fetch_search_console_data,
+        run_seo_optimizer_graph,
+        get_existing_pages,
+        save_page_config,
+        trigger_coolify_deployment,
+        save_seo_report,
+        check_deployment_status,
     ]
 
     # Create worker

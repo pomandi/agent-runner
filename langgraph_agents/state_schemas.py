@@ -289,6 +289,7 @@ class DailyAnalyticsState(TypedDict):
     funnel_analysis: Optional[str]               # Claude output (Türkçe)
     insights: List[str]                          # Önemli bulgular
     recommendations: List[str]                   # Öneriler
+    source_reports: Dict[str, str]               # Per-source LLM analysis reports (Türkçe markdown)
 
     # Report
     report_markdown: Optional[str]               # Türkçe rapor
@@ -301,6 +302,127 @@ class DailyAnalyticsState(TypedDict):
     # Execution tracking
     steps_completed: Annotated[List[str], operator.add]  # Tamamlanan adımlar
     errors: Annotated[List[str], operator.add]   # Hatalar
+
+
+# =============================================================================
+# SEO Landing Optimizer State
+# =============================================================================
+
+class KeywordOpportunity(TypedDict):
+    """Single keyword opportunity."""
+    query: str
+    clicks: int
+    impressions: int
+    ctr: float
+    position: float
+    potential_score: float  # Calculated score for prioritization
+
+
+class PageConfig(TypedDict):
+    """Generated landing page configuration."""
+    slug: str
+    template: Literal["location", "style", "promo"]
+    channels: List[str]
+    theme: Dict[str, Any]
+    seo: Dict[str, Any]
+    hero: Dict[str, Any]
+    sections: List[Dict[str, Any]]
+    campaign: str
+
+
+class SEOLandingOptimizerState(TypedDict):
+    """State for SEO landing page optimization workflow.
+
+    Analyzes Search Console data, identifies keyword opportunities,
+    generates and deploys optimized landing pages.
+    """
+
+    # Mode & Configuration
+    mode: Literal["analyze", "generate", "optimize", "report"]
+    target_date: str  # YYYY-MM-DD
+
+    # Search Console Data
+    keyword_opportunities: List[KeywordOpportunity]
+    top_queries: List[Dict[str, Any]]
+    top_pages: List[Dict[str, Any]]
+    position_distribution: Dict[str, Any]
+    seo_summary: Optional[Dict[str, Any]]
+
+    # Existing Pages Analysis
+    existing_pages: List[str]  # List of existing page slugs
+    existing_keywords: List[str]  # Keywords already covered
+
+    # Strategy
+    selected_keyword: Optional[str]  # Chosen keyword for today
+    selected_template: Optional[Literal["location", "style", "promo"]]
+    page_strategy: Dict[str, Any]  # Strategy details
+
+    # Content Generation
+    generated_config: Optional[PageConfig]  # Generated page config
+    config_validated: bool  # Validation passed
+
+    # Deployment
+    config_saved: bool  # Config file saved
+    deployment_triggered: bool  # Coolify deployment started
+    deployment_uuid: Optional[str]  # Deployment ID
+    deployment_status: Optional[str]  # "pending", "success", "failed"
+
+    # Performance Tracking
+    previous_metrics: Optional[Dict[str, Any]]  # Past performance of generated pages
+    metrics_comparison: Optional[Dict[str, Any]]  # Week-over-week comparison
+
+    # Report
+    report_content: Optional[str]  # Generated report markdown
+    report_saved: bool
+
+    # Execution Tracking
+    steps_completed: Annotated[List[str], operator.add]
+    warnings: Annotated[List[str], operator.add]
+    error: Optional[str]
+
+
+def init_seo_landing_optimizer_state(
+    mode: str = "analyze",
+    target_date: str = None
+) -> SEOLandingOptimizerState:
+    """Initialize SEO landing optimizer state with defaults."""
+    from datetime import date
+    return {
+        # Mode & Config
+        "mode": mode,
+        "target_date": target_date or date.today().isoformat(),
+        # Search Console Data
+        "keyword_opportunities": [],
+        "top_queries": [],
+        "top_pages": [],
+        "position_distribution": {},
+        "seo_summary": None,
+        # Existing Pages
+        "existing_pages": [],
+        "existing_keywords": [],
+        # Strategy
+        "selected_keyword": None,
+        "selected_template": None,
+        "page_strategy": {},
+        # Content Generation
+        "generated_config": None,
+        "config_validated": False,
+        # Deployment
+        "config_saved": False,
+        "deployment_triggered": False,
+        "deployment_uuid": None,
+        "deployment_status": None,
+        # Performance
+        "previous_metrics": None,
+        "metrics_comparison": None,
+        # Report
+        "report_content": None,
+        "report_saved": False,
+        # Tracking
+        "steps_completed": [],
+        "warnings": [],
+        "error": None
+    }
 
 
 def init_daily_analytics_state(
@@ -325,6 +447,7 @@ def init_daily_analytics_state(
         "funnel_analysis": None,
         "insights": [],
         "recommendations": [],
+        "source_reports": {},
         # Report
         "report_markdown": None,
         "quality_score": 0.0,
