@@ -907,6 +907,7 @@ class DailyAnalyticsGraph(BaseAgentGraph):
                 message = message[:3950] + "\n\n... (kırpıldı)"
 
             async with httpx.AsyncClient() as client:
+                # Try with Markdown first
                 response = await client.post(
                     f"https://api.telegram.org/bot{bot_token}/sendMessage",
                     json={
@@ -920,6 +921,23 @@ class DailyAnalyticsGraph(BaseAgentGraph):
                 if response.status_code == 200:
                     logger.info("source_telegram_sent", source=source_name, index=source_index)
                     return True
+                elif response.status_code == 400:
+                    # Markdown parsing failed, retry without parse_mode (plain text)
+                    logger.warning("telegram_markdown_failed_retrying_plain", source=source_name)
+                    response = await client.post(
+                        f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                        json={
+                            "chat_id": chat_id,
+                            "text": message
+                        },
+                        timeout=30.0
+                    )
+                    if response.status_code == 200:
+                        logger.info("source_telegram_sent_plain", source=source_name, index=source_index)
+                        return True
+                    else:
+                        logger.error("source_telegram_failed", source=source_name, status=response.status_code)
+                        return False
                 else:
                     logger.error("source_telegram_failed", source=source_name, status=response.status_code)
                     return False
