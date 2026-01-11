@@ -123,6 +123,45 @@ services:
       - OPENAI_API_KEY
       - EMBEDDING_MODEL
       - ENABLE_MEMORY
+      # =========================================================================
+      # GOOGLE API CREDENTIALS (for GA4, Search Console, Merchant Center)
+      # =========================================================================
+      - GOOGLE_CREDENTIALS_JSON
+      - GOOGLE_CREDENTIALS_PATH
+      - GA4_PROPERTY_ID
+      - MERCHANT_CENTER_ID
+      - SEARCH_CONSOLE_SITE_URL
+      # =========================================================================
+      # VISITOR TRACKING DATABASE (Custom PostgreSQL)
+      # =========================================================================
+      - VISITOR_TRACKING_DATABASE_URL
+      # =========================================================================
+      # AFSPRAAK DATABASE (Appointment System)
+      # =========================================================================
+      - AFSPRAAK_DB_HOST
+      - AFSPRAAK_DB_PORT
+      - AFSPRAAK_DB_USER
+      - AFSPRAAK_DB_PASSWORD
+      - AFSPRAAK_DB_NAME
+      # =========================================================================
+      # TELEGRAM (Analytics Reports)
+      # =========================================================================
+      - TELEGRAM_BOT_TOKEN_ANALYTICS
+      - TELEGRAM_CHAT_ID_ANALYTICS
+      # =========================================================================
+      # GOOGLE ADS API (for google-ads MCP server)
+      # =========================================================================
+      - GOOGLE_ADS_DEVELOPER_TOKEN
+      - GOOGLE_ADS_CLIENT_ID
+      - GOOGLE_ADS_CLIENT_SECRET
+      - GOOGLE_ADS_REFRESH_TOKEN
+      - GOOGLE_ADS_LOGIN_CUSTOMER_ID
+      - GOOGLE_ADS_CUSTOMER_ID
+      # =========================================================================
+      # SHOPIFY API
+      # =========================================================================
+      - SHOPIFY_SHOP_DOMAIN
+      - SHOPIFY_ACCESS_TOKEN
 
     networks:
       - temporal-network
