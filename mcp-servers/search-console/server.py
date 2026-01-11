@@ -370,12 +370,14 @@ async def handle_get_search_analytics(
         'rowLimit': row_limit
     }
 
+    import sys
     response = service.searchanalytics().query(
         siteUrl=site_url,
         body=request
     ).execute()
 
     rows = response.get('rows', [])
+    print(f"[SEARCH-CONSOLE] API returned {len(rows)} rows for site {site_url}", file=sys.stderr)
 
     # Calculate totals
     total_clicks = sum(r.get('clicks', 0) for r in rows)

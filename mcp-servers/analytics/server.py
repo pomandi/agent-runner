@@ -533,8 +533,10 @@ async def handle_run_report(
         RunReportRequest, DateRange, Dimension, Metric
     )
 
+    import sys
     client = get_data_client()
     prop_id = property_id or get_property_id()
+    print(f"[ANALYTICS] Using property ID: {prop_id}", file=sys.stderr)
 
     if dimensions is None:
         dimensions = ['date']
@@ -556,6 +558,7 @@ async def handle_run_report(
     )
 
     response = client.run_report(request)
+    print(f"[ANALYTICS] API returned {len(response.rows) if response.rows else 0} rows for property {prop_id}", file=sys.stderr)
 
     result = format_report_response(response)
     result['property_id'] = prop_id
