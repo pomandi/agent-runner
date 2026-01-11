@@ -633,17 +633,27 @@ class DailyAnalyticsGraph(BaseAgentGraph):
                 end_date = datetime.now()
                 start_date = end_date - timedelta(days=days)
 
-                # Query sessions
+                # DIAGNOSTIC: Log exact date range being queried
+                logger.info(
+                    "visitor_tracking_date_range",
+                    start_date=str(start_date),
+                    end_date=str(end_date),
+                    days_requested=days
+                )
+
+                # Query sessions (excluding bots - matching dashboard behavior)
                 sessions_query = """
                     SELECT
                         COUNT(*) as total_sessions,
-                        COUNT(DISTINCT visitor_id) as unique_visitors,
-                        COUNT(CASE WHEN utm_source IS NOT NULL THEN 1 END) as utm_sessions,
-                        COUNT(CASE WHEN gclid IS NOT NULL THEN 1 END) as gclid_sessions,
-                        COUNT(CASE WHEN fbclid IS NOT NULL THEN 1 END) as fbclid_sessions,
-                        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY total_time_ms / 1000.0) as median_session_duration
-                    FROM sessions
-                    WHERE started_at >= $1 AND started_at < $2
+                        COUNT(DISTINCT s.visitor_id) as unique_visitors,
+                        COUNT(CASE WHEN s.utm_source IS NOT NULL THEN 1 END) as utm_sessions,
+                        COUNT(CASE WHEN s.gclid IS NOT NULL THEN 1 END) as gclid_sessions,
+                        COUNT(CASE WHEN s.fbclid IS NOT NULL THEN 1 END) as fbclid_sessions,
+                        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY s.total_time_ms / 1000.0) as median_session_duration
+                    FROM sessions s
+                    JOIN visitors v ON s.visitor_id = v.visitor_id
+                    WHERE s.started_at >= $1 AND s.started_at < $2
+                    AND v.is_bot = false
                 """
                 session_stats = await conn.fetchrow(sessions_query, start_date, end_date)
 

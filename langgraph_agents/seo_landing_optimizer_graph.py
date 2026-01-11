@@ -18,6 +18,7 @@ Version: 1.1.0 - Added MCP integration
 """
 
 import json
+import os
 import re
 from typing import Any, Dict, List, Optional
 from datetime import datetime
@@ -44,7 +45,11 @@ except ImportError as e:
     logger.warning("mcp_sdk_not_available", error=str(e))
 
 # Constants
-LANDING_PAGES_CONFIG_PATH = Path("/home/claude/projects/sale-v2/pomandi-landing-pages/src/config/pages")
+# Landing pages config path - can be set via env var for container deployment
+LANDING_PAGES_CONFIG_PATH = Path(os.getenv(
+    "LANDING_PAGES_CONFIG_PATH",
+    "/app/landing-pages/config" if Path("/app").exists() else "/home/claude/projects/sale-v2/pomandi-landing-pages/src/config/pages"
+))
 COOLIFY_APP_UUID = "dkgksok4g0o04oko88g08s0g"
 MIN_IMPRESSIONS_THRESHOLD = 100
 POSITION_OPPORTUNITY_RANGE = (4, 20)

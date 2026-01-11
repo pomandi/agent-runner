@@ -15,7 +15,11 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 # Constants
-LANDING_PAGES_CONFIG_PATH = Path("/home/claude/projects/sale-v2/pomandi-landing-pages/src/config/pages")
+# Landing pages config path - can be set via env var for container deployment
+LANDING_PAGES_CONFIG_PATH = Path(os.getenv(
+    "LANDING_PAGES_CONFIG_PATH",
+    "/app/landing-pages/config" if Path("/app").exists() else "/home/claude/projects/sale-v2/pomandi-landing-pages/src/config/pages"
+))
 COOLIFY_APP_UUID = "dkgksok4g0o04oko88g08s0g"
 
 
