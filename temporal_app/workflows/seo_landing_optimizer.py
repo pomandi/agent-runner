@@ -90,14 +90,38 @@ class SEOLandingOptimizerWorkflow:
                 ),
             )
             result["steps_completed"].append("fetch_search_console_data")
+
+            # Capture Search Console fetch results including errors
             result["search_console_summary"] = {
                 "queries_count": len(search_console_data.get("top_queries", [])),
-                "opportunities_count": len(search_console_data.get("keyword_opportunities", [])),
+                "opportunities_count": len(search_console_data.get("keyword_opportunities", {}).get("position_4_to_10", []) if isinstance(search_console_data.get("keyword_opportunities"), dict) else search_console_data.get("keyword_opportunities", [])),
+                "fetch_status": search_console_data.get("fetch_status", "unknown"),
+                "fetch_errors": search_console_data.get("errors", []),
             }
-            workflow.logger.info(
-                f"✅ Search Console data fetched: "
-                f"{result['search_console_summary']['queries_count']} queries"
-            )
+
+            # Add fetch errors to main errors list
+            if search_console_data.get("errors"):
+                for err in search_console_data.get("errors", []):
+                    if isinstance(err, dict):
+                        result["errors"].append(f"SearchConsole: {err.get('type', 'ERROR')} - {err.get('message', str(err))}")
+                    else:
+                        result["errors"].append(f"SearchConsole: {err}")
+
+            # Log status
+            fetch_status = search_console_data.get("fetch_status", "unknown")
+            if fetch_status == "error":
+                workflow.logger.warning(
+                    f"⚠️ Search Console fetch failed: {search_console_data.get('errors', [])}"
+                )
+            elif fetch_status == "partial":
+                workflow.logger.warning(
+                    f"⚠️ Search Console partial fetch: {result['search_console_summary']['queries_count']} queries, errors: {len(search_console_data.get('errors', []))}"
+                )
+            else:
+                workflow.logger.info(
+                    f"✅ Search Console data fetched: "
+                    f"{result['search_console_summary']['queries_count']} queries"
+                )
 
             # Step 2: Get existing pages
             workflow.logger.info("📑 Step 2: Checking existing pages...")
