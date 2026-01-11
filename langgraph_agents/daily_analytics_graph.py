@@ -888,8 +888,8 @@ class DailyAnalyticsGraph(BaseAgentGraph):
             True if sent successfully
         """
         try:
-            bot_token = os.getenv("ANALYTICS_TELEGRAM_BOT_TOKEN")
-            chat_id = os.getenv("ANALYTICS_TELEGRAM_CHAT_ID")
+            bot_token = os.getenv("TELEGRAM_BOT_TOKEN_ANALYTICS")
+            chat_id = os.getenv("TELEGRAM_CHAT_ID_ANALYTICS")
 
             if not bot_token or not chat_id:
                 logger.warning("telegram_config_missing_for_source", source=source_name)
@@ -1742,8 +1742,8 @@ Kisa ve oz yaz. Gereksiz detay verme."""
                 return state
 
             # Get Telegram config (separate from email bot)
-            bot_token = os.getenv("ANALYTICS_TELEGRAM_BOT_TOKEN")
-            chat_id = os.getenv("ANALYTICS_TELEGRAM_CHAT_ID")
+            bot_token = os.getenv("TELEGRAM_BOT_TOKEN_ANALYTICS")
+            chat_id = os.getenv("TELEGRAM_CHAT_ID_ANALYTICS")
 
             if bot_token and chat_id:
                 async with httpx.AsyncClient() as client:
