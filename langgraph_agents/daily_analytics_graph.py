@@ -14,14 +14,18 @@ Collects data from 8 sources:
 7. Shopify - Siparis, gelir, musteri
 8. Afspraak-DB - Randevu, GCLID/FBCLID attribution
 
-Workflow:
-1. Parallel data collection (8 sources)
-2. Merge and validate data
-3. Claude analysis (Turkish)
-4. Generate insights & recommendations
-5. Quality check (regenerate if low)
-6. Format report (Markdown)
-7. Send to Telegram
+Workflow (v3 - Real-time Per-Source Messaging):
+1. For each of 8 sources:
+   - Fetch data from source
+   - Run full LLM analysis (Claude)
+   - Generate Turkish sub-report with diagnostics
+   - IMMEDIATELY send to Telegram (8 messages)
+2. Create final summary report (9th message)
+3. Send final summary to Telegram
+
+Total: 9 Telegram messages per run
+- 8 detailed source reports (sent as each source is analyzed)
+- 1 executive summary (sent at the end)
 
 Schedule: Daily 08:00 UTC (10:00 Amsterdam)
 """
@@ -73,43 +77,43 @@ logger.info("mcp_sdk_status", available=MCP_SDK_AVAILABLE, error=_mcp_import_err
 
 class DailyAnalyticsGraph(BaseAgentGraph):
     """
-    Daily analytics report generator with multi-source data collection.
+    Daily analytics report generator with real-time per-source Telegram messaging.
 
-    Flow:
+    Flow (v3 - Real-time Per-Source Messaging):
         START
           |
-        +--+--+--+--+--+--+--+--+  (Parallel)
-        |  |  |  |  |  |  |  |
-        v  v  v  v  v  v  v  v
-       GA MA VT G4 SC MC SH AP
-        |  |  |  |  |  |  |  |
-        +--+--+--+--+--+--+--+--+
-                  |
-                  v
-            merge_data
-                  |
-                  v
-            analyze_funnel (Claude)
-                  |
-                  v
-            generate_insights (Claude)
-                  |
-                  v
-            quality_check
-                  |
-          +-------+-------+
-          |               |
-          v               v
-        format       regenerate
-        report          |
-          |             |
-          +---------+---+
-                    |
-                    v
-            send_telegram
-                    |
-                    v
-                  END
+          v
+        fetch_google_ads --> analyze_google_ads (LLM) --> 📨 Telegram (1/8)
+          |
+          v
+        fetch_meta_ads --> analyze_meta_ads (LLM) --> 📨 Telegram (2/8)
+          |
+          v
+        fetch_visitor_tracking --> analyze_visitor_tracking (LLM) --> 📨 Telegram (3/8)
+          |
+          v
+        fetch_ga4 --> analyze_ga4 (LLM) --> 📨 Telegram (4/8)
+          |
+          v
+        fetch_search_console --> analyze_search_console (LLM) --> 📨 Telegram (5/8)
+          |
+          v
+        fetch_merchant --> analyze_merchant (LLM) --> 📨 Telegram (6/8)
+          |
+          v
+        fetch_shopify --> analyze_shopify (LLM) --> 📨 Telegram (7/8)
+          |
+          v
+        fetch_appointments --> analyze_appointments (LLM) --> 📨 Telegram (8/8)
+          |
+          v
+        merge_reports (create executive summary)
+          |
+          v
+        send_telegram --> 📨 Telegram (9/9 - Final Summary)
+          |
+          v
+        END
 
     Legend:
         GA = Google Ads
@@ -120,6 +124,17 @@ class DailyAnalyticsGraph(BaseAgentGraph):
         MC = Merchant Center
         SH = Shopify
         AP = Appointments (Afspraak-DB)
+
+    Each source gets full LLM analysis that:
+        1. Checks data status (success/error)
+        2. Diagnoses issues if data is 0 or missing
+        3. Summarizes key metrics
+        4. Provides recommendations
+        5. IMMEDIATELY sends to Telegram (no waiting for all sources)
+
+    Total Telegram Messages: 9
+        - 8 detailed source reports (real-time as each source is analyzed)
+        - 1 executive summary with key metrics (at the end)
     """
 
     def __init__(self, *args, **kwargs):
@@ -277,57 +292,68 @@ class DailyAnalyticsGraph(BaseAgentGraph):
         return results
 
     def build_graph(self) -> StateGraph:
-        """Build daily analytics graph."""
+        """Build daily analytics graph with per-source LLM analysis.
+
+        New Flow (v2):
+            fetch_google_ads -> analyze_google_ads ->
+            fetch_meta_ads -> analyze_meta_ads ->
+            fetch_visitor_tracking -> analyze_visitor_tracking ->
+            fetch_ga4 -> analyze_ga4 ->
+            fetch_search_console -> analyze_search_console ->
+            fetch_merchant -> analyze_merchant ->
+            fetch_shopify -> analyze_shopify ->
+            fetch_appointments -> analyze_appointments ->
+            merge_reports -> send_telegram -> END
+
+        Each data source gets its own full LLM analysis with Turkish sub-report.
+        """
         graph = StateGraph(DailyAnalyticsState)
 
-        # Add data collection nodes
+        # Data collection + analysis nodes (16 total: 8 fetch + 8 analyze)
         graph.add_node("fetch_google_ads", self.fetch_google_ads_node)
+        graph.add_node("analyze_google_ads", self.analyze_google_ads_node)
         graph.add_node("fetch_meta_ads", self.fetch_meta_ads_node)
+        graph.add_node("analyze_meta_ads", self.analyze_meta_ads_node)
         graph.add_node("fetch_visitor_tracking", self.fetch_visitor_tracking_node)
+        graph.add_node("analyze_visitor_tracking", self.analyze_visitor_tracking_node)
         graph.add_node("fetch_ga4", self.fetch_ga4_node)
+        graph.add_node("analyze_ga4", self.analyze_ga4_node)
         graph.add_node("fetch_search_console", self.fetch_search_console_node)
+        graph.add_node("analyze_search_console", self.analyze_search_console_node)
         graph.add_node("fetch_merchant", self.fetch_merchant_node)
+        graph.add_node("analyze_merchant", self.analyze_merchant_node)
         graph.add_node("fetch_shopify", self.fetch_shopify_node)
+        graph.add_node("analyze_shopify", self.analyze_shopify_node)
         graph.add_node("fetch_appointments", self.fetch_appointments_node)
+        graph.add_node("analyze_appointments", self.analyze_appointments_node)
 
-        # Add processing nodes
-        graph.add_node("merge_data", self.merge_data_node)
-        graph.add_node("analyze_funnel", self.analyze_funnel_node)
-        graph.add_node("generate_insights", self.generate_insights_node)
-        graph.add_node("quality_check", self.quality_check_node)
-        graph.add_node("format_report", self.format_report_node)
+        # Final nodes
+        graph.add_node("merge_reports", self.merge_reports_node)
         graph.add_node("send_telegram", self.send_telegram_node)
 
-        # Entry point - start with all data collectors in parallel
-        # For LangGraph, we'll run them sequentially but could use asyncio.gather
+        # Entry point
         graph.set_entry_point("fetch_google_ads")
 
-        # Sequential edges for data collection
-        graph.add_edge("fetch_google_ads", "fetch_meta_ads")
-        graph.add_edge("fetch_meta_ads", "fetch_visitor_tracking")
-        graph.add_edge("fetch_visitor_tracking", "fetch_ga4")
-        graph.add_edge("fetch_ga4", "fetch_search_console")
-        graph.add_edge("fetch_search_console", "fetch_merchant")
-        graph.add_edge("fetch_merchant", "fetch_shopify")
-        graph.add_edge("fetch_shopify", "fetch_appointments")
+        # Sequential edges: fetch -> analyze -> next fetch
+        graph.add_edge("fetch_google_ads", "analyze_google_ads")
+        graph.add_edge("analyze_google_ads", "fetch_meta_ads")
+        graph.add_edge("fetch_meta_ads", "analyze_meta_ads")
+        graph.add_edge("analyze_meta_ads", "fetch_visitor_tracking")
+        graph.add_edge("fetch_visitor_tracking", "analyze_visitor_tracking")
+        graph.add_edge("analyze_visitor_tracking", "fetch_ga4")
+        graph.add_edge("fetch_ga4", "analyze_ga4")
+        graph.add_edge("analyze_ga4", "fetch_search_console")
+        graph.add_edge("fetch_search_console", "analyze_search_console")
+        graph.add_edge("analyze_search_console", "fetch_merchant")
+        graph.add_edge("fetch_merchant", "analyze_merchant")
+        graph.add_edge("analyze_merchant", "fetch_shopify")
+        graph.add_edge("fetch_shopify", "analyze_shopify")
+        graph.add_edge("analyze_shopify", "fetch_appointments")
+        graph.add_edge("fetch_appointments", "analyze_appointments")
 
-        # After all data collected
-        graph.add_edge("fetch_appointments", "merge_data")
-        graph.add_edge("merge_data", "analyze_funnel")
-        graph.add_edge("analyze_funnel", "generate_insights")
-        graph.add_edge("generate_insights", "quality_check")
-
-        # Conditional routing based on quality
-        graph.add_conditional_edges(
-            "quality_check",
-            self.quality_router,
-            {
-                "format": "format_report",
-                "regenerate": "analyze_funnel"  # Loop back
-            }
-        )
-
-        graph.add_edge("format_report", "send_telegram")
+        # After all analysis, merge reports and send
+        graph.add_edge("analyze_appointments", "merge_reports")
+        graph.add_edge("merge_reports", "send_telegram")
         graph.add_edge("send_telegram", END)
 
         return graph
@@ -839,7 +865,499 @@ class DailyAnalyticsGraph(BaseAgentGraph):
         return state
 
     # =========================================================================
-    # PROCESSING NODES
+    # PER-SOURCE ANALYSIS NODES (8 LLM calls)
+    # =========================================================================
+
+    async def _send_source_telegram(
+        self,
+        source_name: str,
+        icon: str,
+        report: str,
+        source_index: int = 0
+    ) -> bool:
+        """
+        Send individual source analysis to Telegram immediately.
+
+        Args:
+            source_name: Display name (e.g., "Google Ads")
+            icon: Emoji icon for the source
+            report: LLM analysis markdown report
+            source_index: Source number (1-8)
+
+        Returns:
+            True if sent successfully
+        """
+        try:
+            bot_token = os.getenv("ANALYTICS_TELEGRAM_BOT_TOKEN")
+            chat_id = os.getenv("ANALYTICS_TELEGRAM_CHAT_ID")
+
+            if not bot_token or not chat_id:
+                logger.warning("telegram_config_missing_for_source", source=source_name)
+                return False
+
+            # Format message with source header
+            message = f"{icon} **{source_name}** ({source_index}/8)\n\n{report}"
+
+            # Truncate if too long (Telegram limit is 4096)
+            if len(message) > 4000:
+                message = message[:3950] + "\n\n... (kırpıldı)"
+
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                    json={
+                        "chat_id": chat_id,
+                        "text": message,
+                        "parse_mode": "Markdown"
+                    },
+                    timeout=30.0
+                )
+
+                if response.status_code == 200:
+                    logger.info("source_telegram_sent", source=source_name, index=source_index)
+                    return True
+                else:
+                    logger.error("source_telegram_failed", source=source_name, status=response.status_code)
+                    return False
+
+        except Exception as e:
+            logger.error("source_telegram_error", source=source_name, error=str(e))
+            return False
+
+    async def _run_source_analysis(
+        self,
+        source_name: str,
+        data: Dict[str, Any],
+        expert_role: str,
+        analysis_focus: str
+    ) -> str:
+        """
+        Run full LLM analysis for a data source.
+
+        Args:
+            source_name: Name of the source (e.g., "Google Ads")
+            data: Data dictionary from fetch node
+            expert_role: Expert role for Claude (e.g., "Google Ads uzmanı")
+            analysis_focus: Specific focus areas for this source
+
+        Returns:
+            Turkish markdown sub-report
+        """
+        # Check if there's an error in the data
+        has_error = data.get("error") is not None
+        is_empty = not data or (not has_error and all(
+            v in [0, None, [], {}]
+            for k, v in data.items()
+            if k not in ["source", "error", "period_days"]
+        ))
+
+        prompt = f"""Sen bir {expert_role}sin. Aşağıdaki {source_name} verisini detaylı analiz et.
+
+VERİ:
+{json.dumps(data, indent=2, default=str, ensure_ascii=False)}
+
+ANALİZ GEREKSİNİMLERİ:
+
+## 1. VERİ DURUMU
+- Veri başarıyla geldi mi?
+- Error var mı? Varsa ne?
+- Kritik metrikler sıfır veya boş mu?
+
+## 2. EĞER VERİ SORUNLUYSA
+Olası nedenler:
+- API credentials eksik/hatalı mı?
+- Token expired mı?
+- Account/kampanya aktif değil mi?
+- Date range sorunu mu?
+- MCP server çalışıyor mu?
+
+## 3. VERİ ÖZETİ (veri varsa)
+{analysis_focus}
+
+## 4. ÖNERİLER
+- Acil aksiyon gerekiyor mu?
+- İyileştirme önerileri
+
+KURALLAR:
+- TÜRKÇE yaz
+- KISA ve ÖZ ol (max 15 satır)
+- Markdown formatında yaz
+- Emoji kullan (✅ ⚠️ ❌ 📊 💡)
+- Sorun varsa YÜKSEK ÖNCELİK olarak belirt"""
+
+        if not CLAUDE_SDK_AVAILABLE:
+            return f"⚠️ LLM analizi yapılamadı (Claude SDK yok)\n\nVeri: {json.dumps(data, indent=2, default=str)[:500]}"
+
+        try:
+            response = ""
+            async for msg in query(
+                prompt=prompt,
+                options=ClaudeAgentOptions(
+                    max_turns=1,
+                    permission_mode="bypassPermissions"
+                )
+            ):
+                if hasattr(msg, 'content'):
+                    for block in msg.content:
+                        if hasattr(block, 'text'):
+                            response += block.text
+
+            return response if response else f"⚠️ LLM yanıt vermedi\n\nVeri: {json.dumps(data, indent=2, default=str)[:300]}"
+
+        except Exception as e:
+            logger.error(f"source_analysis_error", source=source_name, error=str(e))
+            return f"❌ LLM analizi başarısız: {str(e)}\n\nVeri: {json.dumps(data, indent=2, default=str)[:300]}"
+
+    async def analyze_google_ads_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
+        """Analyze Google Ads data with full LLM analysis and send to Telegram."""
+        try:
+            data = state.get("google_ads_data", {}) or {}
+
+            report = await self._run_source_analysis(
+                source_name="Google Ads",
+                data=data,
+                expert_role="Google Ads uzmanı",
+                analysis_focus="""- Toplam harcama: €X
+- Toplam tıklama ve CTR
+- CPC trendi
+- En iyi kampanya performansı
+- Conversion sayısı ve maliyeti
+- Keyword kalitesi"""
+            )
+
+            if "source_reports" not in state:
+                state["source_reports"] = {}
+            state["source_reports"]["google_ads"] = report
+            state = self.add_step(state, "analyze_google_ads")
+
+            # Send to Telegram immediately
+            await self._send_source_telegram("Google Ads", "📈", report, 1)
+
+            logger.info("google_ads_analyzed", report_length=len(report))
+
+        except Exception as e:
+            logger.error("analyze_google_ads_error", error=str(e))
+            state["source_reports"]["google_ads"] = f"❌ Analiz hatası: {str(e)}"
+
+        return state
+
+    async def analyze_meta_ads_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
+        """Analyze Meta Ads data with full LLM analysis and send to Telegram."""
+        try:
+            data = state.get("meta_ads_data", {}) or {}
+
+            report = await self._run_source_analysis(
+                source_name="Meta Ads (Facebook/Instagram)",
+                data=data,
+                expert_role="Meta Ads uzmanı",
+                analysis_focus="""- Toplam harcama: €X
+- Reach ve impressions
+- CTR ve CPM
+- En iyi kampanya
+- Audience performansı
+- Creative insights"""
+            )
+
+            if "source_reports" not in state:
+                state["source_reports"] = {}
+            state["source_reports"]["meta_ads"] = report
+            state = self.add_step(state, "analyze_meta_ads")
+
+            # Send to Telegram immediately
+            await self._send_source_telegram("Meta Ads", "📘", report, 2)
+
+            logger.info("meta_ads_analyzed", report_length=len(report))
+
+        except Exception as e:
+            logger.error("analyze_meta_ads_error", error=str(e))
+            state["source_reports"]["meta_ads"] = f"❌ Analiz hatası: {str(e)}"
+
+        return state
+
+    async def analyze_visitor_tracking_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
+        """Analyze Visitor Tracking data with full LLM analysis and send to Telegram."""
+        try:
+            data = state.get("visitor_tracking_data", {}) or {}
+
+            report = await self._run_source_analysis(
+                source_name="Visitor Tracking (Custom DB)",
+                data=data,
+                expert_role="Web analytics uzmanı",
+                analysis_focus="""- Toplam session ve unique visitor
+- GCLID/FBCLID attribution oranı
+- Median session süresi (ORTALAMA DEĞİL!)
+- Top landing page'ler
+- Traffic source dağılımı
+- Conversion tracking durumu"""
+            )
+
+            if "source_reports" not in state:
+                state["source_reports"] = {}
+            state["source_reports"]["visitor_tracking"] = report
+            state = self.add_step(state, "analyze_visitor_tracking")
+
+            # Send to Telegram immediately
+            await self._send_source_telegram("Visitor Tracking", "🌐", report, 3)
+
+            logger.info("visitor_tracking_analyzed", report_length=len(report))
+
+        except Exception as e:
+            logger.error("analyze_visitor_tracking_error", error=str(e))
+            state["source_reports"]["visitor_tracking"] = f"❌ Analiz hatası: {str(e)}"
+
+        return state
+
+    async def analyze_ga4_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
+        """Analyze GA4 data with full LLM analysis and send to Telegram."""
+        try:
+            data = state.get("ga4_data", {}) or {}
+
+            report = await self._run_source_analysis(
+                source_name="Google Analytics 4",
+                data=data,
+                expert_role="GA4 analytics uzmanı",
+                analysis_focus="""- Users ve sessions
+- New vs returning users
+- Bounce rate
+- Avg session duration
+- Top pages
+- Traffic sources karşılaştırması"""
+            )
+
+            if "source_reports" not in state:
+                state["source_reports"] = {}
+            state["source_reports"]["ga4"] = report
+            state = self.add_step(state, "analyze_ga4")
+
+            # Send to Telegram immediately
+            await self._send_source_telegram("Google Analytics 4", "📊", report, 4)
+
+            logger.info("ga4_analyzed", report_length=len(report))
+
+        except Exception as e:
+            logger.error("analyze_ga4_error", error=str(e))
+            state["source_reports"]["ga4"] = f"❌ Analiz hatası: {str(e)}"
+
+        return state
+
+    async def analyze_search_console_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
+        """Analyze Search Console data with full LLM analysis and send to Telegram."""
+        try:
+            data = state.get("search_console_data", {}) or {}
+
+            report = await self._run_source_analysis(
+                source_name="Google Search Console",
+                data=data,
+                expert_role="SEO uzmanı",
+                analysis_focus="""- Organic clicks ve impressions
+- Ortalama CTR
+- Ortalama pozisyon
+- Top performing queries
+- Top pages
+- Pozisyon değişimleri"""
+            )
+
+            if "source_reports" not in state:
+                state["source_reports"] = {}
+            state["source_reports"]["search_console"] = report
+            state = self.add_step(state, "analyze_search_console")
+
+            # Send to Telegram immediately
+            await self._send_source_telegram("Search Console", "🔍", report, 5)
+
+            logger.info("search_console_analyzed", report_length=len(report))
+
+        except Exception as e:
+            logger.error("analyze_search_console_error", error=str(e))
+            state["source_reports"]["search_console"] = f"❌ Analiz hatası: {str(e)}"
+
+        return state
+
+    async def analyze_merchant_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
+        """Analyze Merchant Center data with full LLM analysis and send to Telegram."""
+        try:
+            data = state.get("merchant_data", {}) or {}
+
+            report = await self._run_source_analysis(
+                source_name="Google Merchant Center",
+                data=data,
+                expert_role="E-commerce ve feed uzmanı",
+                analysis_focus="""- Toplam ürün sayısı
+- Approved vs disapproved ürünler
+- Health score
+- Top performing products
+- Feed issues ve warnings
+- Click/impression performansı"""
+            )
+
+            if "source_reports" not in state:
+                state["source_reports"] = {}
+            state["source_reports"]["merchant_center"] = report
+            state = self.add_step(state, "analyze_merchant")
+
+            # Send to Telegram immediately
+            await self._send_source_telegram("Merchant Center", "🛒", report, 6)
+
+            logger.info("merchant_analyzed", report_length=len(report))
+
+        except Exception as e:
+            logger.error("analyze_merchant_error", error=str(e))
+            state["source_reports"]["merchant_center"] = f"❌ Analiz hatası: {str(e)}"
+
+        return state
+
+    async def analyze_shopify_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
+        """Analyze Shopify data with full LLM analysis and send to Telegram."""
+        try:
+            data = state.get("shopify_data", {}) or {}
+
+            report = await self._run_source_analysis(
+                source_name="Shopify",
+                data=data,
+                expert_role="E-commerce ve satış uzmanı",
+                analysis_focus="""- Toplam sipariş sayısı
+- Toplam gelir (€)
+- Average Order Value (AOV)
+- New vs returning customers
+- Top selling products
+- Abandoned cart oranı"""
+            )
+
+            if "source_reports" not in state:
+                state["source_reports"] = {}
+            state["source_reports"]["shopify"] = report
+            state = self.add_step(state, "analyze_shopify")
+
+            # Send to Telegram immediately
+            await self._send_source_telegram("Shopify", "💰", report, 7)
+
+            logger.info("shopify_analyzed", report_length=len(report))
+
+        except Exception as e:
+            logger.error("analyze_shopify_error", error=str(e))
+            state["source_reports"]["shopify"] = f"❌ Analiz hatası: {str(e)}"
+
+        return state
+
+    async def analyze_appointments_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
+        """Analyze Appointments data with full LLM analysis and send to Telegram."""
+        try:
+            data = state.get("appointments_data", {}) or {}
+
+            report = await self._run_source_analysis(
+                source_name="Randevu Sistemi (Afspraak-DB)",
+                data=data,
+                expert_role="CRM ve randevu uzmanı",
+                analysis_focus="""- Toplam randevu sayısı
+- GCLID ile gelen randevular (Google Ads attribution)
+- FBCLID ile gelen randevular (Meta attribution)
+- Visitor ID eşleşme oranı
+- Source bazlı dağılım
+- Conversion funnel analizi"""
+            )
+
+            if "source_reports" not in state:
+                state["source_reports"] = {}
+            state["source_reports"]["appointments"] = report
+            state = self.add_step(state, "analyze_appointments")
+
+            # Send to Telegram immediately
+            await self._send_source_telegram("Randevular", "📅", report, 8)
+
+            logger.info("appointments_analyzed", report_length=len(report))
+
+        except Exception as e:
+            logger.error("analyze_appointments_error", error=str(e))
+            state["source_reports"]["appointments"] = f"❌ Analiz hatası: {str(e)}"
+
+        return state
+
+    async def merge_reports_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
+        """
+        Create final summary report (9th message).
+
+        Since each source report was already sent individually,
+        this creates a concise executive summary with key metrics.
+        """
+        try:
+            days = state["days"]
+            brand = state["brand"]
+            today = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+            # Extract key metrics for summary
+            ga = state.get("google_ads_data", {}) or {}
+            ma = state.get("meta_ads_data", {}) or {}
+            vt = state.get("visitor_tracking_data", {}) or {}
+            sh = state.get("shopify_data", {}) or {}
+            mc = state.get("merchant_data", {}) or {}
+            ap = state.get("appointments_data", {}) or {}
+
+            # Calculate totals
+            total_ad_spend = float(ga.get("total_spend", 0) or 0) + float(ma.get("total_spend", 0) or 0)
+            total_revenue = float(sh.get("total_revenue", 0) or 0)
+            total_orders = int(sh.get("total_orders", 0) or 0)
+            total_sessions = int(vt.get("total_sessions", 0) or 0)
+            total_appointments = int(ap.get("total_appointments", 0) or 0)
+            roas = total_revenue / total_ad_spend if total_ad_spend > 0 else 0
+
+            # Count successful/failed sources
+            sources = [ga, ma, vt, state.get("ga4_data", {}), state.get("search_console_data", {}), mc, sh, ap]
+            success_count = sum(1 for s in sources if s and not s.get("error"))
+            error_count = sum(1 for s in sources if s and s.get("error"))
+
+            # Build concise final summary
+            final_report = f"""🎯 **FİNAL ÖZET** (9/9)
+
+📅 **{today}** | {brand.title()} | Son {days} gün
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+💰 **HARCAMA & GELİR**
+• Toplam Reklam: €{total_ad_spend:,.2f}
+• Toplam Gelir: €{total_revenue:,.2f}
+• ROAS: {roas:.1f}x
+
+📊 **PERFORMANS**
+• Sipariş: {total_orders}
+• Session: {total_sessions:,}
+• Randevu: {total_appointments}
+
+📈 **GOOGLE ADS**
+• Harcama: €{ga.get('total_spend', 0):,.2f}
+• Tıklama: {ga.get('total_clicks', 0):,}
+• CTR: {ga.get('avg_ctr', 0):.2f}%
+
+📘 **META ADS**
+• Harcama: €{ma.get('total_spend', 0):,.2f}
+• Reach: {ma.get('total_reach', 0):,}
+
+🛒 **MERCHANT HEALTH**
+• Skor: {mc.get('health_score', 0):.0f}%
+• Onaylı: {mc.get('approved_products', 0)} ürün
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+✅ Başarılı: {success_count}/8 kaynak
+❌ Hatalı: {error_count}/8 kaynak
+
+🤖 *Detaylı analizler yukarıdaki 8 mesajda.*
+"""
+
+            state["report_markdown"] = final_report
+            state = self.add_step(state, "merge_reports")
+
+            logger.info("final_summary_created", sources_success=success_count, sources_error=error_count)
+
+        except Exception as e:
+            error_msg = f"Final summary failed: {str(e)}"
+            state["errors"].append(error_msg)
+            state["report_markdown"] = f"❌ Özet oluşturulamadı: {str(e)}"
+            logger.error("merge_reports_error", error=str(e))
+
+        return state
+
+    # =========================================================================
+    # PROCESSING NODES (Legacy - keeping for backward compatibility)
     # =========================================================================
 
     async def merge_data_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
@@ -1223,9 +1741,9 @@ Kisa ve oz yaz. Gereksiz detay verme."""
                 state["errors"].append("No report to send")
                 return state
 
-            # Get Telegram config
-            bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+            # Get Telegram config (separate from email bot)
+            bot_token = os.getenv("ANALYTICS_TELEGRAM_BOT_TOKEN")
+            chat_id = os.getenv("ANALYTICS_TELEGRAM_CHAT_ID")
 
             if bot_token and chat_id:
                 async with httpx.AsyncClient() as client:
