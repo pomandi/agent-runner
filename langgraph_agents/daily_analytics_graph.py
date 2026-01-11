@@ -438,9 +438,22 @@ class DailyAnalyticsGraph(BaseAgentGraph):
                 {"name": "get_ads", "arguments": {"days": days, "limit": 10}},
             ])
 
+            # DIAGNOSTIC LOGGING - debug Meta Ads 0 data issue
+            logger.info("meta_ads_raw_results", results_count=len(results), results_keys=[list(r.keys()) if isinstance(r, dict) else type(r).__name__ for r in results])
+
             campaigns = results[0] if len(results) > 0 else {}
             adsets = results[1] if len(results) > 1 else {}
             ads = results[2] if len(results) > 2 else {}
+
+            # DIAGNOSTIC: Log what we got from get_campaigns
+            logger.info("meta_ads_campaigns_debug",
+                campaigns_type=type(campaigns).__name__,
+                campaigns_keys=list(campaigns.keys()) if isinstance(campaigns, dict) else "NOT_DICT",
+                total_campaigns=campaigns.get("total_campaigns") if isinstance(campaigns, dict) else None,
+                has_summary="summary" in campaigns if isinstance(campaigns, dict) else False,
+                has_error="error" in campaigns if isinstance(campaigns, dict) else False,
+                error_msg=campaigns.get("error") if isinstance(campaigns, dict) else None
+            )
 
             # Note: MCP server returns summary with already-calculated totals
             # Also campaigns[i]["insights"]["spend"] for per-campaign data
@@ -487,6 +500,18 @@ class DailyAnalyticsGraph(BaseAgentGraph):
 
             state["meta_ads_data"] = data
             state = self.add_step(state, "fetch_meta_ads")
+
+            # DIAGNOSTIC: Log final computed values
+            logger.info("meta_ads_final_data",
+                total_campaigns=data.get("total_campaigns"),
+                total_spend=data.get("total_spend"),
+                total_clicks=data.get("total_clicks"),
+                total_impressions=data.get("total_impressions"),
+                total_reach=data.get("total_reach"),
+                campaigns_list_count=len(data.get("campaigns", [])),
+                has_error=bool(data.get("error")),
+                error_msg=data.get("error")
+            )
 
             logger.info("meta_ads_fetched", days=days, brand=brand, has_error=bool(data.get("error")))
 
