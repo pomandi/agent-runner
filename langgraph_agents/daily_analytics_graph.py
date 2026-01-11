@@ -273,7 +273,14 @@ class DailyAnalyticsGraph(BaseAgentGraph):
                                             parsed = json.loads(content.text)
                                             results.append(parsed)
                                             logger.debug("mcp_tool_success", server=server_name, tool=tool_name)
-                                        except json.JSONDecodeError:
+                                        except json.JSONDecodeError as e:
+                                            # DIAGNOSTIC: Log JSON parse failure details
+                                            logger.warning("mcp_json_parse_failed",
+                                                server=server_name,
+                                                tool=tool_name,
+                                                error=str(e),
+                                                text_preview=content.text[:200] if content.text else "EMPTY"
+                                            )
                                             results.append({"raw_response": content.text[:500]})
                                         break
                                 else:
