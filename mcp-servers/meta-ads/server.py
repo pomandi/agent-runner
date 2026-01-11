@@ -1114,7 +1114,7 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Handle tool calls - return list of TextContent directly"""
     if name not in TOOL_HANDLERS:
-        return [TextContent(type="text", text=f"Unknown tool: {name}")]
+        return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]
 
     try:
         handler = TOOL_HANDLERS[name]
@@ -1123,7 +1123,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # Return list of TextContent directly (MCP SDK handles wrapping)
         return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
     except Exception as e:
-        return [TextContent(type="text", text=f"Error: {str(e)}")]
+        import traceback
+        # Return JSON error so it can be properly parsed
+        error_result = {
+            "error": str(e),
+            "tool": name,
+            "traceback": traceback.format_exc()[-500:]  # Last 500 chars of traceback
+        }
+        return [TextContent(type="text", text=json.dumps(error_result))]
 
 
 # ============================================================================
