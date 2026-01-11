@@ -602,112 +602,27 @@ class DailyAnalyticsGraph(BaseAgentGraph):
 
     async def fetch_visitor_tracking_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
         """
-        Fetch custom visitor tracking data from PostgreSQL with smart error handling.
+        Fetch custom visitor tracking data via MCP server.
 
-        This is the BEST data source - our own tracking system!
+        Uses visitor-tracking MCP server which:
+        - Connects to PostgreSQL visitor tracking database
+        - Excludes bot traffic (is_bot = false)
+        - Returns sessions, visitors, UTM/GCLID/FBCLID attribution, landing pages, traffic sources
         """
         source_name = "visitor_tracking"
         days = state["days"]
-        brand = state["brand"]
 
-        logger.info("Fetching visitor tracking data", days=days, brand=brand)
+        logger.info("Fetching visitor tracking data via MCP", days=days)
 
-        # Check config first
-        db_url = os.getenv("VISITOR_TRACKING_DATABASE_URL")
-        if not db_url:
-            error_msg = "VISITOR_TRACKING_DATABASE_URL env var not set"
-            state["visitor_tracking_data"] = {
-                "source": source_name,
-                "error": error_msg,
-                "diagnosis": {"category": "config_error", "probable_cause": "Eksik environment variable"}
-            }
-            state["errors"].append(error_msg)
-            self.error_aggregator.add_error(source_name, error_msg)
-            state = self.add_step(state, "fetch_visitor_tracking")
-            return state
-
-        async def _fetch_visitor_data():
-            """Inner fetch function for smart retry wrapper."""
-            conn = await asyncpg.connect(db_url)
-            try:
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=days)
-
-                # DIAGNOSTIC: Log exact date range being queried
-                logger.info(
-                    "visitor_tracking_date_range",
-                    start_date=str(start_date),
-                    end_date=str(end_date),
-                    days_requested=days
-                )
-
-                # Query sessions (excluding bots - matching dashboard behavior)
-                sessions_query = """
-                    SELECT
-                        COUNT(*) as total_sessions,
-                        COUNT(DISTINCT s.visitor_id) as unique_visitors,
-                        COUNT(CASE WHEN s.utm_source IS NOT NULL THEN 1 END) as utm_sessions,
-                        COUNT(CASE WHEN s.gclid IS NOT NULL THEN 1 END) as gclid_sessions,
-                        COUNT(CASE WHEN s.fbclid IS NOT NULL THEN 1 END) as fbclid_sessions,
-                        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY s.total_time_ms / 1000.0) as median_session_duration
-                    FROM sessions s
-                    JOIN visitors v ON s.visitor_id = v.visitor_id
-                    WHERE s.started_at >= $1 AND s.started_at < $2
-                    AND v.is_bot = false
-                """
-                session_stats = await conn.fetchrow(sessions_query, start_date, end_date)
-
-                # Query conversions
-                conversions_query = """
-                    SELECT ct.name as goal_type, COUNT(*) as count
-                    FROM conversions c
-                    LEFT JOIN conversion_types ct ON c.conversion_type_id = ct.id
-                    WHERE c.created_at >= $1 AND c.created_at < $2
-                    GROUP BY ct.name
-                """
-                conversions = await conn.fetch(conversions_query, start_date, end_date)
-
-                # Query landing pages (excluding bots)
-                landing_pages_query = """
-                    SELECT s.landing_page, COUNT(*) as sessions, COUNT(DISTINCT s.visitor_id) as unique_visitors
-                    FROM sessions s
-                    JOIN visitors v ON s.visitor_id = v.visitor_id
-                    WHERE s.started_at >= $1 AND s.started_at < $2
-                    AND v.is_bot = false
-                    GROUP BY s.landing_page ORDER BY sessions DESC LIMIT 10
-                """
-                top_landing_pages = await conn.fetch(landing_pages_query, start_date, end_date)
-
-                # Query traffic sources (excluding bots)
-                traffic_sources_query = """
-                    SELECT COALESCE(s.utm_source, 'direct') as source, COALESCE(s.utm_medium, 'none') as medium, COUNT(*) as sessions
-                    FROM sessions s
-                    JOIN visitors v ON s.visitor_id = v.visitor_id
-                    WHERE s.started_at >= $1 AND s.started_at < $2
-                    AND v.is_bot = false
-                    GROUP BY s.utm_source, s.utm_medium ORDER BY sessions DESC LIMIT 10
-                """
-                traffic_sources = await conn.fetch(traffic_sources_query, start_date, end_date)
-
-                return {
-                    "total_sessions": session_stats["total_sessions"] if session_stats else 0,
-                    "unique_visitors": session_stats["unique_visitors"] if session_stats else 0,
-                    "utm_sessions": session_stats["utm_sessions"] if session_stats else 0,
-                    "gclid_sessions": session_stats["gclid_sessions"] if session_stats else 0,
-                    "fbclid_sessions": session_stats["fbclid_sessions"] if session_stats else 0,
-                    "median_session_duration": float(session_stats["median_session_duration"]) if session_stats and session_stats["median_session_duration"] else 0,
-                    "conversions": [dict(c) for c in conversions],
-                    "top_landing_pages": [dict(p) for p in top_landing_pages],
-                    "traffic_sources": [dict(s) for s in traffic_sources],
-                }
-            finally:
-                await conn.close()
-
-        # Smart fetch with retry for network errors
+        # Use MCP server for data collection
         fetch_result = await fetch_with_smart_retry(
             source_name=source_name,
-            fetch_func=_fetch_visitor_data,
-            context={},
+            fetch_func=lambda: self._call_mcp_tool(
+                "visitor-tracking",
+                "get_visitor_summary",
+                {"days": days}
+            ),
+            context={"mcp_dir": str(self._mcp_dir)},
             max_retries=3,
             circuit_threshold=5,
             circuit_cooldown=120.0
@@ -738,12 +653,34 @@ class DailyAnalyticsGraph(BaseAgentGraph):
             state = self.add_step(state, "fetch_visitor_tracking")
             return state
 
-        # Success
-        db_data = fetch_result["data"]
+        # Success - MCP returns complete summary
+        result = fetch_result["data"]
+
+        # Check for error in MCP response
+        if result.get("error"):
+            error_msg = result.get("error")
+            state["visitor_tracking_data"] = {
+                "source": source_name,
+                "error": error_msg,
+                "diagnosis": {"category": "mcp_error", "probable_cause": error_msg}
+            }
+            state["errors"].append(error_msg)
+            self.error_aggregator.add_error(source_name, error_msg)
+            state = self.add_step(state, "fetch_visitor_tracking")
+            return state
+
         data = {
             "source": source_name,
             "period_days": days,
-            **db_data,
+            "total_sessions": result.get("total_sessions", 0),
+            "unique_visitors": result.get("unique_visitors", 0),
+            "utm_sessions": result.get("utm_sessions", 0),
+            "gclid_sessions": result.get("gclid_sessions", 0),
+            "fbclid_sessions": result.get("fbclid_sessions", 0),
+            "median_session_duration": result.get("median_session_duration", 0),
+            "conversions": result.get("conversions", []),
+            "top_landing_pages": result.get("top_landing_pages", []),
+            "traffic_sources": result.get("traffic_sources", []),
             "error": None,
             "fetch_attempts": fetch_result.get("attempts", 1)
         }
@@ -756,6 +693,7 @@ class DailyAnalyticsGraph(BaseAgentGraph):
             "visitor_tracking_fetched",
             days=days,
             sessions=data.get("total_sessions", 0),
+            visitors=data.get("unique_visitors", 0),
             attempts=fetch_result.get("attempts")
         )
 
