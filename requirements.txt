@@ -33,11 +33,12 @@ psycopg2-binary>=2.9.0
 asyncpg>=0.29.0
 
 # ============================================================================
-# GOOGLE ADS API
+# GOOGLE APIs (Ads, Analytics, Search Console, Merchant Center)
 # ============================================================================
 google-ads>=24.0.0
 google-auth>=2.20.0
 google-api-python-client>=2.100.0
+google-analytics-data>=0.18.0  # GA4 Data API
 
 # ============================================================================
 # META/FACEBOOK ADS API

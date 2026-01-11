@@ -364,12 +364,11 @@ async def get_appointments(args: dict) -> dict:
             c.name as customer_name,
             c.email as customer_email,
             c.phone as customer_phone,
-            s.start_time as slot_start,
-            s.end_time as slot_end
+            s.start_time as slot_start
         FROM appointments_appointment a
         JOIN appointments_customer c ON a.customer_id = c.id
         LEFT JOIN appointments_appointmentslot s ON a.slot_id = s.id
-        WHERE a.created_at >= NOW() - INTERVAL '%s days'
+        WHERE a.created_at >= NOW() - make_interval(days => %s)
         ORDER BY a.created_at DESC
         LIMIT %s
     """
@@ -405,8 +404,8 @@ async def get_appointments_with_gclid(args: dict) -> dict:
         JOIN appointments_customer c ON a.customer_id = c.id
         WHERE a.gclid IS NOT NULL
         AND a.gclid != ''
-        AND a.gclid NOT LIKE 'TEST%'
-        AND a.created_at >= NOW() - INTERVAL '%s days'
+        AND a.gclid NOT LIKE 'TEST%%'
+        AND a.created_at >= NOW() - make_interval(days => %s)
         ORDER BY a.created_at DESC
     """
 
@@ -442,7 +441,7 @@ async def get_appointments_with_fbclid(args: dict) -> dict:
         JOIN appointments_customer c ON a.customer_id = c.id
         WHERE a.fbclid IS NOT NULL
         AND a.fbclid != ''
-        AND a.created_at >= NOW() - INTERVAL '%s days'
+        AND a.created_at >= NOW() - make_interval(days => %s)
         ORDER BY a.created_at DESC
     """
 
@@ -460,50 +459,56 @@ async def get_appointment_stats(args: dict) -> dict:
     """Get appointment statistics"""
     days = args.get("days", 30)
 
-    # Total count
+    def safe_get_count(result, key='total'):
+        """Safely get count from query result"""
+        if result and len(result) > 0:
+            return result[0].get(key, 0) or 0
+        return 0
+
+    # Total count - use make_interval for proper parameter binding
     total_query = """
         SELECT COUNT(*) as total
         FROM appointments_appointment
-        WHERE created_at >= NOW() - INTERVAL '%s days'
+        WHERE created_at >= NOW() - make_interval(days => %s)
     """
-    total = execute_query(total_query, (days,))[0]['total']
+    total = safe_get_count(execute_query(total_query, (days,)), 'total')
 
     # With GCLID
     gclid_query = """
         SELECT COUNT(*) as count
         FROM appointments_appointment
-        WHERE gclid IS NOT NULL AND gclid != '' AND gclid NOT LIKE 'TEST%'
-        AND created_at >= NOW() - INTERVAL '%s days'
+        WHERE gclid IS NOT NULL AND gclid != '' AND gclid NOT LIKE 'TEST%%'
+        AND created_at >= NOW() - make_interval(days => %s)
     """
-    with_gclid = execute_query(gclid_query, (days,))[0]['count']
+    with_gclid = safe_get_count(execute_query(gclid_query, (days,)), 'count')
 
     # With FBCLID
     fbclid_query = """
         SELECT COUNT(*) as count
         FROM appointments_appointment
         WHERE fbclid IS NOT NULL AND fbclid != ''
-        AND created_at >= NOW() - INTERVAL '%s days'
+        AND created_at >= NOW() - make_interval(days => %s)
     """
-    with_fbclid = execute_query(fbclid_query, (days,))[0]['count']
+    with_fbclid = safe_get_count(execute_query(fbclid_query, (days,)), 'count')
 
     # With visitor_id
     visitor_query = """
         SELECT COUNT(*) as count
         FROM appointments_appointment
         WHERE visitor_id IS NOT NULL AND visitor_id != ''
-        AND created_at >= NOW() - INTERVAL '%s days'
+        AND created_at >= NOW() - make_interval(days => %s)
     """
-    with_visitor_id = execute_query(visitor_query, (days,))[0]['count']
+    with_visitor_id = safe_get_count(execute_query(visitor_query, (days,)), 'count')
 
     # By source
     source_query = """
         SELECT appointment_source, COUNT(*) as count
         FROM appointments_appointment
-        WHERE created_at >= NOW() - INTERVAL '%s days'
+        WHERE created_at >= NOW() - make_interval(days => %s)
         GROUP BY appointment_source
         ORDER BY count DESC
     """
-    by_source = execute_query(source_query, (days,))
+    by_source = execute_query(source_query, (days,)) or []
 
     return {
         "days": days,
@@ -583,10 +588,10 @@ async def get_daily_appointments(args: dict) -> dict:
         SELECT
             DATE(created_at) as date,
             COUNT(*) as total,
-            COUNT(CASE WHEN gclid IS NOT NULL AND gclid != '' AND gclid NOT LIKE 'TEST%' THEN 1 END) as from_google_ads,
+            COUNT(CASE WHEN gclid IS NOT NULL AND gclid != '' AND gclid NOT LIKE 'TEST%%' THEN 1 END) as from_google_ads,
             COUNT(CASE WHEN fbclid IS NOT NULL AND fbclid != '' THEN 1 END) as from_meta_ads
         FROM appointments_appointment
-        WHERE created_at >= NOW() - INTERVAL '%s days'
+        WHERE created_at >= NOW() - make_interval(days => %s)
         GROUP BY DATE(created_at)
         ORDER BY date DESC
     """
@@ -607,10 +612,10 @@ async def get_appointment_sources(args: dict) -> dict:
         SELECT
             appointment_source,
             COUNT(*) as count,
-            COUNT(CASE WHEN gclid IS NOT NULL AND gclid != '' AND gclid NOT LIKE 'TEST%' THEN 1 END) as with_gclid,
+            COUNT(CASE WHEN gclid IS NOT NULL AND gclid != '' AND gclid NOT LIKE 'TEST%%' THEN 1 END) as with_gclid,
             COUNT(CASE WHEN fbclid IS NOT NULL AND fbclid != '' THEN 1 END) as with_fbclid
         FROM appointments_appointment
-        WHERE created_at >= NOW() - INTERVAL '%s days'
+        WHERE created_at >= NOW() - make_interval(days => %s)
         GROUP BY appointment_source
         ORDER BY count DESC
     """
@@ -636,7 +641,7 @@ async def get_utm_tracking(args: dict) -> dict:
             utm_term,
             COUNT(*) as count
         FROM appointments_utmtracking
-        WHERE created_at >= NOW() - INTERVAL '%s days'
+        WHERE created_at >= NOW() - make_interval(days => %s)
         GROUP BY utm_source, utm_medium, utm_campaign, utm_content, utm_term
         ORDER BY count DESC
         LIMIT 50
