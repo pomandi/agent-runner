@@ -473,12 +473,14 @@ class DailyAnalyticsGraph(BaseAgentGraph):
                 total_impressions = summary.get("total_impressions", 0)
             else:
                 # Fallback: calculate from campaigns (insights is nested!)
-                total_spend = sum(float(c.get("insights", {}).get("spend", 0) or 0) for c in campaigns.get("campaigns", []))
-                total_clicks = sum(int(c.get("insights", {}).get("clicks", 0) or 0) for c in campaigns.get("campaigns", []))
-                total_impressions = sum(int(c.get("insights", {}).get("impressions", 0) or 0) for c in campaigns.get("campaigns", []))
+                # Note: insights can be None for campaigns without data, so use (c.get("insights") or {})
+                total_spend = sum(float((c.get("insights") or {}).get("spend", 0) or 0) for c in campaigns.get("campaigns", []))
+                total_clicks = sum(int((c.get("insights") or {}).get("clicks", 0) or 0) for c in campaigns.get("campaigns", []))
+                total_impressions = sum(int((c.get("insights") or {}).get("impressions", 0) or 0) for c in campaigns.get("campaigns", []))
 
             # Reach is not in summary, calculate from campaign insights
-            total_reach = sum(int(c.get("insights", {}).get("reach", 0) or 0) for c in campaigns.get("campaigns", []))
+            # Note: insights can be None for campaigns without data, so use (c.get("insights") or {})
+            total_reach = sum(int((c.get("insights") or {}).get("reach", 0) or 0) for c in campaigns.get("campaigns", []))
 
             # Build consolidated data
             data = {
