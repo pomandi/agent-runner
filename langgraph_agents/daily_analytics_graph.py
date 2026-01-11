@@ -667,21 +667,25 @@ class DailyAnalyticsGraph(BaseAgentGraph):
                 """
                 conversions = await conn.fetch(conversions_query, start_date, end_date)
 
-                # Query landing pages
+                # Query landing pages (excluding bots)
                 landing_pages_query = """
-                    SELECT landing_page, COUNT(*) as sessions, COUNT(DISTINCT visitor_id) as unique_visitors
-                    FROM sessions
-                    WHERE started_at >= $1 AND started_at < $2
-                    GROUP BY landing_page ORDER BY sessions DESC LIMIT 10
+                    SELECT s.landing_page, COUNT(*) as sessions, COUNT(DISTINCT s.visitor_id) as unique_visitors
+                    FROM sessions s
+                    JOIN visitors v ON s.visitor_id = v.visitor_id
+                    WHERE s.started_at >= $1 AND s.started_at < $2
+                    AND v.is_bot = false
+                    GROUP BY s.landing_page ORDER BY sessions DESC LIMIT 10
                 """
                 top_landing_pages = await conn.fetch(landing_pages_query, start_date, end_date)
 
-                # Query traffic sources
+                # Query traffic sources (excluding bots)
                 traffic_sources_query = """
-                    SELECT COALESCE(utm_source, 'direct') as source, COALESCE(utm_medium, 'none') as medium, COUNT(*) as sessions
-                    FROM sessions
-                    WHERE started_at >= $1 AND started_at < $2
-                    GROUP BY utm_source, utm_medium ORDER BY sessions DESC LIMIT 10
+                    SELECT COALESCE(s.utm_source, 'direct') as source, COALESCE(s.utm_medium, 'none') as medium, COUNT(*) as sessions
+                    FROM sessions s
+                    JOIN visitors v ON s.visitor_id = v.visitor_id
+                    WHERE s.started_at >= $1 AND s.started_at < $2
+                    AND v.is_bot = false
+                    GROUP BY s.utm_source, s.utm_medium ORDER BY sessions DESC LIMIT 10
                 """
                 traffic_sources = await conn.fetch(traffic_sources_query, start_date, end_date)
 
