@@ -21,6 +21,8 @@ class CollectionName(str, Enum):
     EMAIL_PATTERNS = "email_patterns"
     EMAIL_CONVERSATIONS = "email_conversations"
     SEO_STRATEGIES = "seo_strategies"
+    ANALYTICS_DATA = "analytics_data"
+    ACTION_HISTORY = "action_history"
 
 
 # Collection configurations with vector params and schema
@@ -152,6 +154,45 @@ COLLECTION_CONFIGS: Dict[CollectionName, Dict[str, Any]] = {
             "created_at": "str"  # ISO datetime
         },
         "description": "SEO landing page strategies and performance tracking"
+    },
+
+    CollectionName.ANALYTICS_DATA: {
+        "vectors_config": VectorParams(
+            size=1536,
+            distance=Distance.COSINE
+        ),
+        "schema": {
+            "brand": "str",  # pomandi, costume
+            "date": "str",  # YYYY-MM-DD
+            "total_spend": "float",
+            "total_revenue": "float",
+            "roas": "float",
+            "quality_score": "float",  # 0-1 validation score
+            "sources_count": "int",  # Number of data sources
+            "data_hash": "str",  # Deduplication hash
+            "summary": "str",  # Human-readable summary
+            "created_at": "str"  # ISO datetime
+        },
+        "description": "Daily analytics summaries for semantic search and trend analysis"
+    },
+
+    CollectionName.ACTION_HISTORY: {
+        "vectors_config": VectorParams(
+            size=1536,
+            distance=Distance.COSINE
+        ),
+        "schema": {
+            "action_type": "str",  # budget_change, bid_adjustment, pause_campaign, etc.
+            "platform": "str",  # google_ads, meta_ads, shopify, etc.
+            "brand": "str",  # pomandi, costume
+            "plan_id": "str",  # Unique plan identifier
+            "result": "str",  # success, failed, pending, approved, rejected
+            "impact_value": "float",  # Numeric impact (spend change, ROAS change)
+            "date": "str",  # YYYY-MM-DD
+            "reasoning": "str",  # Why this action was taken
+            "created_at": "str"  # ISO datetime
+        },
+        "description": "Action plan history for learning from past decisions and outcomes"
     }
 }
 

@@ -1636,7 +1636,51 @@ KURALLAR:
                 size_bytes=json_path.stat().st_size
             )
 
-            # === 2. Save to Memory-Hub (if available) ===
+            # === 2. Save to Qdrant (Vector DB) ===
+            aggregated = data_to_save.get("aggregated_metrics", {})
+            quality = data_to_save.get("quality", {})
+            sources_success = quality.get("sources_success", 0)
+            sources_total = sources_success + quality.get("sources_error", 0)
+            quality_score = sources_success / max(1, sources_total)
+
+            summary_text = f"""
+Daily Analytics Summary for {brand} on {today}
+Period: Last {days} days
+Total Ad Spend: €{aggregated.get('total_ad_spend', 0):.2f}
+Total Revenue: €{aggregated.get('total_revenue', 0):.2f}
+ROAS: {aggregated.get('roas', 0):.2f}
+Total Orders: {aggregated.get('total_orders', 0)}
+Total Sessions: {aggregated.get('total_sessions', 0)}
+CPA: €{aggregated.get('cpa', 0):.2f}
+AOV: €{aggregated.get('aov', 0):.2f}
+Quality: {sources_success}/{sources_total} sources successful ({quality_score:.0%})
+Insights: {state.get('report_markdown', 'No summary')[:500]}
+"""
+
+            qdrant_metadata = {
+                "brand": brand,
+                "date": today,
+                "total_spend": float(aggregated.get("total_ad_spend", 0)),
+                "total_revenue": float(aggregated.get("total_revenue", 0)),
+                "roas": float(aggregated.get("roas", 0)),
+                "quality_score": float(quality_score),
+                "sources_count": int(sources_success),
+                "data_hash": data_hash,
+                "summary": state.get('report_markdown', '')[:500],
+                "created_at": timestamp
+            }
+
+            try:
+                qdrant_doc_id = await self.save_to_memory("analytics_data", summary_text, qdrant_metadata)
+                state["qdrant_saved"] = True
+                state["qdrant_doc_id"] = qdrant_doc_id
+                logger.info("qdrant_save_success", doc_id=qdrant_doc_id, collection="analytics_data")
+            except Exception as e:
+                logger.warning("qdrant_save_failed", error=str(e))
+                state["qdrant_saved"] = False
+                state["qdrant_doc_id"] = None
+
+            # === 3. Save to Memory-Hub (if available) ===
             memory_hub_saved = await self._save_to_memory_hub(data_to_save)
 
             # Update state with save status

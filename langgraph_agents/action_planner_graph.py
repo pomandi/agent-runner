@@ -753,6 +753,61 @@ KURALLAR:
             state["plan_id"] = plan_id
 
             logger.info("plan_saved", plan_id=plan_id, path=str(json_path))
+
+            # === Save to Qdrant (Vector DB) ===
+            actions_count = len(state.get("action_plans", []))
+            auto_count = len(state.get("auto_actions", []))
+            approval_count = len(state.get("approval_required", []))
+            manual_count = len(state.get("manual_actions", []))
+
+            # Build summary for semantic search
+            issues_summary = "\n".join(state.get("key_issues", [])[:5])
+            opportunities_summary = "\n".join(state.get("opportunities", [])[:3])
+
+            summary_text = f"""
+Action Plan for {state['brand']} on {state['date']}
+Plan ID: {plan_id}
+Validation Score: {state['validation_score']:.0%}
+
+Situation:
+{state.get('situation_summary', 'No summary')[:400]}
+
+Key Issues:
+{issues_summary}
+
+Opportunities:
+{opportunities_summary}
+
+Actions Summary:
+- Total Actions: {actions_count}
+- Auto Execute: {auto_count}
+- Approval Required: {approval_count}
+- Manual: {manual_count}
+"""
+
+            qdrant_metadata = {
+                "brand": state["brand"],
+                "date": state["date"],
+                "plan_id": plan_id,
+                "validation_score": float(state["validation_score"]),
+                "actions_count": int(actions_count),
+                "auto_count": int(auto_count),
+                "approval_count": int(approval_count),
+                "manual_count": int(manual_count),
+                "type": "action_plan",
+                "created_at": plan_doc["created_at"]
+            }
+
+            try:
+                qdrant_doc_id = await self.save_to_memory("action_history", summary_text, qdrant_metadata)
+                state["qdrant_saved"] = True
+                state["qdrant_doc_id"] = qdrant_doc_id
+                logger.info("action_plan_qdrant_saved", doc_id=qdrant_doc_id, collection="action_history")
+            except Exception as e:
+                logger.warning("action_plan_qdrant_save_failed", error=str(e))
+                state["qdrant_saved"] = False
+                state["qdrant_doc_id"] = None
+
             state = self.add_step(state, "save_plan")
 
         except Exception as e:

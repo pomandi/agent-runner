@@ -683,6 +683,47 @@ class DataValidatorGraph(BaseAgentGraph):
             state["validation_save_path"] = str(json_path)
 
             logger.info("validation_saved", path=str(json_path), score=state["validation_score"])
+
+            # === Save to Qdrant (Vector DB) ===
+            anomalies_count = len(state.get("anomalies", []))
+            conflicts_count = len(state.get("cross_source_conflicts", []))
+            duplicates_count = state.get("dedup_stats", {}).get("duplicates_found", 0)
+
+            summary_text = f"""
+Validation Result for {state['brand']} on {state['date']}
+Period: Last {state['days']} days
+Validation Score: {state['validation_score']:.0%}
+Proceed to Analysis: {'YES' if state['proceed_to_analysis'] else 'NO'}
+Requires Human Review: {'YES' if state['requires_human_review'] else 'NO'}
+Anomalies Found: {anomalies_count}
+Duplicates Removed: {duplicates_count}
+Cross-Source Conflicts: {conflicts_count}
+Report: {state.get('validation_report', 'No report')[:500]}
+"""
+
+            qdrant_metadata = {
+                "brand": state["brand"],
+                "date": state["date"],
+                "validation_score": float(state["validation_score"]),
+                "proceed": state["proceed_to_analysis"],
+                "requires_review": state["requires_human_review"],
+                "anomalies_count": int(anomalies_count),
+                "duplicates_count": int(duplicates_count),
+                "conflicts_count": int(conflicts_count),
+                "type": "validation_result",
+                "created_at": validation_doc["created_at"]
+            }
+
+            try:
+                qdrant_doc_id = await self.save_to_memory("agent_context", summary_text, qdrant_metadata)
+                state["qdrant_saved"] = True
+                state["qdrant_doc_id"] = qdrant_doc_id
+                logger.info("validation_qdrant_saved", doc_id=qdrant_doc_id, collection="agent_context")
+            except Exception as e:
+                logger.warning("validation_qdrant_save_failed", error=str(e))
+                state["qdrant_saved"] = False
+                state["qdrant_doc_id"] = None
+
             state = self.add_step(state, "save_validation")
 
             # Also save to Memory-Hub for historical tracking
