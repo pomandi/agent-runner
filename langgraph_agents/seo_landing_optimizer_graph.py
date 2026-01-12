@@ -662,14 +662,15 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
             slug = self._generate_slug(keyword)
 
             # Determine channels and language based on keyword
+            # Include locale aliases (nl, fr, en) for proper routing in storefront
             if any(fr_word in keyword.lower() for fr_word in ["costume", "mariage", "homme", "bruxelles", "liège"]):
-                channels = ["belgium-channel"]
+                channels = ["belgium-channel", "fr", "nl", "en"]
                 primary_lang = "fr"
             elif any(nl_word in keyword.lower() for nl_word in ["pak", "maatpak", "trouw", "kostuum"]):
-                channels = ["belgium-channel", "netherlands-channel"]
+                channels = ["belgium-channel", "netherlands-channel", "nl", "fr", "en"]
                 primary_lang = "nl"
             else:
-                channels = ["belgium-channel", "netherlands-channel"]
+                channels = ["belgium-channel", "netherlands-channel", "nl", "fr", "en"]
                 primary_lang = "nl"
 
             # Try to generate content with LLM first

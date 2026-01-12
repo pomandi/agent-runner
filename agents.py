@@ -408,7 +408,7 @@ Generate PageConfig JSON with:
 {
   "slug": "keyword-slug",
   "template": "location|style|promo",
-  "channels": ["belgium-channel", "netherlands-channel"],
+  "channels": ["belgium-channel", "netherlands-channel", "nl", "fr", "en"],
   "theme": {
     "mode": "light",
     "primary": "#1a1a1a",
