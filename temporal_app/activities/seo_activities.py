@@ -276,7 +276,8 @@ async def fetch_search_console_data(days: int = 28) -> Dict[str, Any]:
 async def run_seo_optimizer_graph(
     mode: str = "analyze",
     target_date: str = None,
-    search_console_data: Dict[str, Any] = None
+    search_console_data: Dict[str, Any] = None,
+    target_keyword: str = None
 ) -> Dict[str, Any]:
     """
     Run SEO Landing Optimizer LangGraph workflow.
@@ -285,11 +286,12 @@ async def run_seo_optimizer_graph(
         mode: Operation mode ("analyze", "generate", "report")
         target_date: Target date (YYYY-MM-DD)
         search_console_data: Pre-fetched Search Console data
+        target_keyword: Optional specific keyword to force page generation for
 
     Returns:
         Optimizer result with generated config, report, etc.
     """
-    activity.logger.info(f"Running SEO optimizer graph: mode={mode}")
+    activity.logger.info(f"Running SEO optimizer graph: mode={mode}, target_keyword={target_keyword}")
     start_time = time.time()
 
     try:
@@ -313,6 +315,11 @@ async def run_seo_optimizer_graph(
             state["top_pages"] = search_console_data.get("top_pages", [])
             state["position_distribution"] = search_console_data.get("position_distribution", {})
             state["seo_summary"] = search_console_data.get("seo_summary")
+
+        # If target_keyword specified, force that keyword selection
+        if target_keyword:
+            state["selected_keyword"] = target_keyword
+            activity.logger.info(f"Forcing target keyword: {target_keyword}")
 
         # Run graph
         result = await graph.run(**state)
