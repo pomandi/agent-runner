@@ -36,6 +36,7 @@ import httpx
 
 from .base_graph import BaseAgentGraph
 from .duplicate_detector import DuplicateDetector
+from memory.memory_hub_client import save_to_memory_hub
 from .validation_rules import (
     CROSS_SOURCE_RULES,
     ANOMALY_RULES,
@@ -736,22 +737,57 @@ Report: {state.get('validation_report', 'No report')[:500]}
         return state
 
     async def _save_to_memory_hub(self, validation_doc: dict) -> bool:
-        """Save validation results to Memory-Hub.
-
-        Note: Memory-Hub MCP integration is not yet available.
-        This method logs the intent and returns False until MCP is configured.
-        """
+        """Save validation results to Memory-Hub via HTTP client."""
         try:
-            # TODO: Integrate with Memory-Hub MCP when available
-            # For now, just log that we would save to Memory-Hub
-            logger.info(
-                "memory_hub_save_skipped",
-                reason="MCP integration not yet configured",
-                brand=validation_doc.get("brand"),
-                date=validation_doc.get("date"),
-                score=validation_doc.get("validation_score")
+            brand = validation_doc.get("brand", "unknown")
+            date = validation_doc.get("date", "unknown")
+            score = validation_doc.get("validation_score", 0)
+            proceed = validation_doc.get("proceed_to_analysis", False)
+
+            # Build content for memory card
+            anomalies = validation_doc.get("anomalies", [])
+            conflicts = validation_doc.get("cross_source_conflicts", [])
+            dedup = validation_doc.get("dedup_stats", {})
+
+            content = f"""## Validation Result
+
+**Brand:** {brand}
+**Date:** {date}
+**Score:** {score:.0%}
+**Proceed:** {'✅ YES' if proceed else '❌ NO'}
+
+### Deduplication
+- Duplicates Found: {dedup.get('duplicates_found', 0)}
+- Removed: {dedup.get('removed', 0)}
+
+### Anomalies ({len(anomalies)})
+{chr(10).join([f"- {a.get('source', 'unknown')}: {a.get('message', '')}" for a in anomalies[:5]]) if anomalies else "None detected"}
+
+### Cross-Source Conflicts ({len(conflicts)})
+{chr(10).join([f"- {c.get('sources', [])}: {c.get('message', '')}" for c in conflicts[:5]]) if conflicts else "None detected"}
+
+### Report
+{validation_doc.get('validation_report', 'No report')[:1000]}
+"""
+
+            # Save to Memory-Hub
+            success = await save_to_memory_hub(
+                type="note",
+                title=f"Validation - {brand} - {date} - {score:.0%}",
+                content=content,
+                project=brand,
+                domain="validation",
+                tags=["validation", brand, date, "pass" if proceed else "fail"],
+                data_source="validator_graph",
+                data_date=date
             )
-            return False
+
+            if success:
+                logger.info("memory_hub_validation_saved", brand=brand, date=date, score=score)
+            else:
+                logger.warning("memory_hub_validation_save_failed", brand=brand, date=date)
+
+            return success
 
         except Exception as e:
             logger.warning("memory_hub_validation_save_error", error=str(e))

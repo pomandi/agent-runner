@@ -48,6 +48,7 @@ AGENT_OUTPUTS_DIR = Path(__file__).parent.parent / "agent_outputs" / "daily_anal
 
 from .base_graph import BaseAgentGraph
 from .state_schemas import DailyAnalyticsState, init_daily_analytics_state
+from memory.memory_hub_client import save_to_memory_hub
 from .error_handling import (
     fetch_with_smart_retry,
     ErrorAggregator,
@@ -1757,46 +1758,62 @@ Insights: {state.get('report_markdown', 'No summary')[:500]}
 
     async def _save_to_memory_hub(self, data: Dict[str, Any]) -> bool:
         """
-        Save analytics data to Memory-Hub via MCP.
+        Save analytics data to Memory-Hub via HTTP client.
 
-        Creates a memory_card with type 'analytics_data' for later retrieval
+        Creates a memory_card with type 'note' for later retrieval
         and cross-reference with other data sources.
 
         Returns:
             True if saved successfully, False otherwise
         """
         try:
-            # Try to call Memory-Hub MCP server
-            result = await self._call_mcp_tool(
-                "memory-hub",
-                "memory_create",
-                {
-                    "type": "analytics_data",
-                    "title": f"Daily Analytics - {data['metadata']['brand']} - {data['metadata']['collection_date']}",
-                    "content": json.dumps({
-                        "summary": data.get("final_summary", "")[:2000],  # Truncate for memory card
-                        "aggregated_metrics": data.get("aggregated_metrics", {}),
-                        "quality": data.get("quality", {})
-                    }, ensure_ascii=False),
-                    "project": data["metadata"]["brand"],
-                    "tags": [
-                        "analytics",
-                        "daily-report",
-                        data["metadata"]["brand"],
-                        data["metadata"]["collection_date"]
-                    ],
-                    "data_source": "daily_analytics_graph",
-                    "data_date": data["metadata"]["collection_date"],
-                    "data_hash": data["metadata"]["data_hash"]
-                }
+            brand = data["metadata"]["brand"]
+            date = data["metadata"]["collection_date"]
+            aggregated = data.get("aggregated_metrics", {})
+            quality = data.get("quality", {})
+
+            # Build content for memory card
+            content = f"""## Daily Analytics Summary
+
+**Brand:** {brand}
+**Date:** {date}
+**Period:** {data['metadata'].get('period_days', 7)} days
+
+### Key Metrics
+- Total Ad Spend: €{aggregated.get('total_ad_spend', 0):.2f}
+- Total Revenue: €{aggregated.get('total_revenue', 0):.2f}
+- ROAS: {aggregated.get('roas', 0):.2f}
+- Total Orders: {aggregated.get('total_orders', 0)}
+- Total Sessions: {aggregated.get('total_sessions', 0)}
+- CPA: €{aggregated.get('cpa', 0):.2f}
+- AOV: €{aggregated.get('aov', 0):.2f}
+
+### Data Quality
+- Sources Success: {quality.get('sources_success', 0)}
+- Sources Error: {quality.get('sources_error', 0)}
+
+### Summary
+{data.get('final_summary', 'No summary')[:1500]}
+"""
+
+            # Save to Memory-Hub
+            success = await save_to_memory_hub(
+                type="note",
+                title=f"Daily Analytics - {brand} - {date}",
+                content=content,
+                project=brand,
+                domain="analytics",
+                tags=["analytics", "daily-report", brand, date],
+                data_source="daily_analytics_graph",
+                data_date=date
             )
 
-            if result.get("error"):
-                logger.warning("memory_hub_save_failed", error=result.get("error"))
-                return False
+            if success:
+                logger.info("memory_hub_saved", brand=brand, date=date)
+            else:
+                logger.warning("memory_hub_save_failed", brand=brand, date=date)
 
-            logger.info("memory_hub_saved", card_id=result.get("id"))
-            return True
+            return success
 
         except Exception as e:
             logger.warning("memory_hub_save_error", error=str(e))
