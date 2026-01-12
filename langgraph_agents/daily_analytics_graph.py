@@ -41,6 +41,10 @@ import asyncio
 import asyncpg
 import httpx
 import json
+import hashlib
+
+# Output directory for saving analytics data
+AGENT_OUTPUTS_DIR = Path(__file__).parent.parent / "agent_outputs" / "daily_analytics"
 
 from .base_graph import BaseAgentGraph
 from .state_schemas import DailyAnalyticsState, init_daily_analytics_state
@@ -368,6 +372,7 @@ class DailyAnalyticsGraph(BaseAgentGraph):
 
         # Final nodes
         graph.add_node("merge_reports", self.merge_reports_node)
+        graph.add_node("save_data", self.save_data_node)  # NEW: Data persistence
         graph.add_node("send_telegram", self.send_telegram_node)
 
         # Entry point
@@ -390,9 +395,10 @@ class DailyAnalyticsGraph(BaseAgentGraph):
         graph.add_edge("analyze_shopify", "fetch_appointments")
         graph.add_edge("fetch_appointments", "analyze_appointments")
 
-        # After all analysis, merge reports and send
+        # After all analysis, merge reports, save data, then send
         graph.add_edge("analyze_appointments", "merge_reports")
-        graph.add_edge("merge_reports", "send_telegram")
+        graph.add_edge("merge_reports", "save_data")  # NEW: Save before sending
+        graph.add_edge("save_data", "send_telegram")
         graph.add_edge("send_telegram", END)
 
         return graph
@@ -1540,6 +1546,217 @@ KURALLAR:
             logger.error("merge_reports_error", error=str(e))
 
         return state
+
+    async def save_data_node(self, state: DailyAnalyticsState) -> DailyAnalyticsState:
+        """
+        Save collected data and analysis to persistent storage.
+
+        This node saves:
+        1. Raw data from all 8 sources
+        2. LLM analysis reports
+        3. Final summary
+        4. Metadata (timestamps, quality scores, etc.)
+
+        Storage:
+        - JSON file: agent_outputs/daily_analytics/YYYY-MM-DD_{brand}.json
+        - Memory-Hub: analytics_data card (if available)
+        - Data hash for duplicate detection
+
+        Flow: merge_reports -> save_data -> send_telegram
+        """
+        try:
+            brand = state["brand"]
+            days = state["days"]
+            today = datetime.now().strftime("%Y-%m-%d")
+            timestamp = datetime.now().isoformat()
+
+            # Compile all data into a comprehensive structure
+            data_to_save = {
+                "metadata": {
+                    "brand": brand,
+                    "period_days": days,
+                    "collection_date": today,
+                    "collection_timestamp": timestamp,
+                    "graph_version": "v3",
+                    "steps_completed": state.get("steps_completed", [])
+                },
+                "raw_data": {
+                    "google_ads": state.get("google_ads_data", {}),
+                    "meta_ads": state.get("meta_ads_data", {}),
+                    "visitor_tracking": state.get("visitor_tracking_data", {}),
+                    "ga4": state.get("ga4_data", {}),
+                    "search_console": state.get("search_console_data", {}),
+                    "merchant_center": state.get("merchant_data", {}),
+                    "shopify": state.get("shopify_data", {}),
+                    "appointments": state.get("appointments_data", {})
+                },
+                "analysis_reports": state.get("source_reports", {}),
+                "final_summary": state.get("report_markdown", ""),
+                "quality": {
+                    "sources_success": sum(
+                        1 for k, v in state.items()
+                        if k.endswith("_data") and isinstance(v, dict) and not v.get("error")
+                    ),
+                    "sources_error": sum(
+                        1 for k, v in state.items()
+                        if k.endswith("_data") and isinstance(v, dict) and v.get("error")
+                    ),
+                    "errors": state.get("errors", [])
+                },
+                "aggregated_metrics": self._calculate_aggregated_metrics(state)
+            }
+
+            # Generate data hash for duplicate detection
+            hash_input = f"{brand}:{today}:{days}"
+            data_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
+            data_to_save["metadata"]["data_hash"] = data_hash
+
+            # === 1. Save to JSON file ===
+            AGENT_OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+            json_filename = f"{today}_{brand}.json"
+            json_path = AGENT_OUTPUTS_DIR / json_filename
+
+            # Check if file already exists (duplicate detection)
+            if json_path.exists():
+                logger.warning(
+                    "save_data_existing_file",
+                    path=str(json_path),
+                    action="overwriting"
+                )
+                # Keep backup of previous data
+                backup_path = AGENT_OUTPUTS_DIR / f"{today}_{brand}_backup_{timestamp.replace(':', '-')}.json"
+                json_path.rename(backup_path)
+
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(data_to_save, f, indent=2, ensure_ascii=False, default=str)
+
+            logger.info(
+                "data_saved_to_json",
+                path=str(json_path),
+                size_bytes=json_path.stat().st_size
+            )
+
+            # === 2. Save to Memory-Hub (if available) ===
+            memory_hub_saved = await self._save_to_memory_hub(data_to_save)
+
+            # Update state with save status
+            state["data_saved"] = True
+            state["data_save_path"] = str(json_path)
+            state["data_hash"] = data_hash
+            state["memory_hub_saved"] = memory_hub_saved
+            state = self.add_step(state, "save_data")
+
+            logger.info(
+                "save_data_complete",
+                json_path=str(json_path),
+                memory_hub=memory_hub_saved,
+                data_hash=data_hash
+            )
+
+        except Exception as e:
+            error_msg = f"Data save failed: {str(e)}"
+            state["errors"].append(error_msg)
+            state["data_saved"] = False
+            logger.error("save_data_error", error=str(e))
+
+        return state
+
+    def _calculate_aggregated_metrics(self, state: DailyAnalyticsState) -> Dict[str, Any]:
+        """Calculate aggregated metrics from all sources."""
+        try:
+            ga = state.get("google_ads_data", {}) or {}
+            ma = state.get("meta_ads_data", {}) or {}
+            vt = state.get("visitor_tracking_data", {}) or {}
+            sh = state.get("shopify_data", {}) or {}
+            mc = state.get("merchant_data", {}) or {}
+            ap = state.get("appointments_data", {}) or {}
+
+            total_ad_spend = float(ga.get("total_spend", 0) or 0) + float(ma.get("total_spend", 0) or 0)
+            total_revenue = float(sh.get("total_revenue", 0) or 0)
+            total_orders = int(sh.get("total_orders", 0) or 0)
+            total_sessions = int(vt.get("total_sessions", 0) or 0)
+            total_appointments = int(ap.get("total_appointments", 0) or 0)
+
+            roas = total_revenue / total_ad_spend if total_ad_spend > 0 else 0
+            cpa = total_ad_spend / total_orders if total_orders > 0 else 0
+
+            return {
+                "total_ad_spend": total_ad_spend,
+                "total_revenue": total_revenue,
+                "total_orders": total_orders,
+                "total_sessions": total_sessions,
+                "total_appointments": total_appointments,
+                "roas": round(roas, 2),
+                "cpa": round(cpa, 2),
+                "aov": round(total_revenue / total_orders, 2) if total_orders > 0 else 0,
+                "google_ads": {
+                    "spend": float(ga.get("total_spend", 0) or 0),
+                    "clicks": int(ga.get("total_clicks", 0) or 0),
+                    "conversions": float(ga.get("total_conversions", 0) or 0),
+                    "ctr": float(ga.get("avg_ctr", 0) or 0)
+                },
+                "meta_ads": {
+                    "spend": float(ma.get("total_spend", 0) or 0),
+                    "reach": int(ma.get("total_reach", 0) or 0),
+                    "clicks": int(ma.get("total_clicks", 0) or 0)
+                },
+                "merchant_center": {
+                    "total_products": int(mc.get("total_products", 0) or 0),
+                    "approved": int(mc.get("approved_products", 0) or 0),
+                    "disapproved": int(mc.get("disapproved_products", 0) or 0),
+                    "health_score": float(mc.get("health_score", 0) or 0)
+                }
+            }
+        except Exception as e:
+            logger.error("calculate_aggregated_metrics_error", error=str(e))
+            return {}
+
+    async def _save_to_memory_hub(self, data: Dict[str, Any]) -> bool:
+        """
+        Save analytics data to Memory-Hub via MCP.
+
+        Creates a memory_card with type 'analytics_data' for later retrieval
+        and cross-reference with other data sources.
+
+        Returns:
+            True if saved successfully, False otherwise
+        """
+        try:
+            # Try to call Memory-Hub MCP server
+            result = await self._call_mcp_tool(
+                "memory-hub",
+                "memory_create",
+                {
+                    "type": "analytics_data",
+                    "title": f"Daily Analytics - {data['metadata']['brand']} - {data['metadata']['collection_date']}",
+                    "content": json.dumps({
+                        "summary": data.get("final_summary", "")[:2000],  # Truncate for memory card
+                        "aggregated_metrics": data.get("aggregated_metrics", {}),
+                        "quality": data.get("quality", {})
+                    }, ensure_ascii=False),
+                    "project": data["metadata"]["brand"],
+                    "tags": [
+                        "analytics",
+                        "daily-report",
+                        data["metadata"]["brand"],
+                        data["metadata"]["collection_date"]
+                    ],
+                    "data_source": "daily_analytics_graph",
+                    "data_date": data["metadata"]["collection_date"],
+                    "data_hash": data["metadata"]["data_hash"]
+                }
+            )
+
+            if result.get("error"):
+                logger.warning("memory_hub_save_failed", error=result.get("error"))
+                return False
+
+            logger.info("memory_hub_saved", card_id=result.get("id"))
+            return True
+
+        except Exception as e:
+            logger.warning("memory_hub_save_error", error=str(e))
+            return False
 
     # =========================================================================
     # PROCESSING NODES (Legacy - keeping for backward compatibility)

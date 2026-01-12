@@ -295,6 +295,12 @@ class DailyAnalyticsState(TypedDict):
     report_markdown: Optional[str]               # Türkçe rapor
     quality_score: float                         # Rapor kalite skoru 0-1
 
+    # Data Persistence (NEW - Faz 1)
+    data_saved: bool                             # Veri kaydedildi mi
+    data_save_path: Optional[str]                # JSON dosya yolu
+    data_hash: Optional[str]                     # Duplicate detection için hash
+    memory_hub_saved: bool                       # Memory-Hub'a kaydedildi mi
+
     # Delivery
     telegram_sent: bool                          # Telegram'a gönderildi mi
     telegram_message_id: Optional[str]           # Telegram mesaj ID'si
@@ -363,6 +369,7 @@ class SEOLandingOptimizerState(TypedDict):
 
     # Deployment
     config_saved: bool  # Config file saved
+    git_pushed: bool  # Git commit and push completed
     deployment_triggered: bool  # Coolify deployment started
     deployment_uuid: Optional[str]  # Deployment ID
     deployment_status: Optional[str]  # "pending", "success", "failed"
@@ -409,6 +416,7 @@ def init_seo_landing_optimizer_state(
         "config_validated": False,
         # Deployment
         "config_saved": False,
+        "git_pushed": False,
         "deployment_triggered": False,
         "deployment_uuid": None,
         "deployment_status": None,
@@ -451,6 +459,11 @@ def init_daily_analytics_state(
         # Report
         "report_markdown": None,
         "quality_score": 0.0,
+        # Data Persistence (NEW - Faz 1)
+        "data_saved": False,
+        "data_save_path": None,
+        "data_hash": None,
+        "memory_hub_saved": False,
         # Delivery
         "telegram_sent": False,
         "telegram_message_id": None,
