@@ -164,31 +164,136 @@ class FeedbackCollectorGraph(BaseAgentGraph):
         self._feedback_dir = Path(__file__).parent.parent / "agent_outputs" / "feedback"
 
     def build_graph(self) -> StateGraph:
-        """Build feedback collector graph."""
+        """Build feedback collector graph with CONDITIONAL EDGES.
+
+        Flow:
+            load_pending ->
+            [CONDITIONAL: has_pending?]
+                -> no_pending: log_no_pending -> END
+                -> has_pending: collect_metrics -> compare_impact -> evaluate_success ->
+                   generate_learnings -> save_feedback ->
+                   [CONDITIONAL: feedback_result?]
+                       -> all_success: notify_success -> END
+                       -> mixed_results: notify_mixed -> END
+                       -> all_failed: notify_failure -> END
+
+        Conditional edges make branching VISIBLE in the graph structure.
+        """
         graph = StateGraph(FeedbackCollectorState)
 
-        # Add nodes
+        # Add main pipeline nodes
         graph.add_node("load_pending", self.load_pending_node)
         graph.add_node("collect_metrics", self.collect_metrics_node)
         graph.add_node("compare_impact", self.compare_impact_node)
         graph.add_node("evaluate_success", self.evaluate_success_node)
         graph.add_node("generate_learnings", self.generate_learnings_node)
         graph.add_node("save_feedback", self.save_feedback_node)
-        graph.add_node("notify", self.notify_node)
+
+        # Add branching nodes
+        graph.add_node("log_no_pending", self.log_no_pending_node)
+        graph.add_node("notify_success", self.notify_success_node)
+        graph.add_node("notify_mixed", self.notify_mixed_node)
+        graph.add_node("notify_failure", self.notify_failure_node)
 
         # Entry point
         graph.set_entry_point("load_pending")
 
-        # Flow
-        graph.add_edge("load_pending", "collect_metrics")
+        # CONDITIONAL EDGE 1: Check if there are pending actions
+        graph.add_conditional_edges(
+            "load_pending",
+            self._route_has_pending,
+            {
+                "no_pending": "log_no_pending",
+                "has_pending": "collect_metrics"
+            }
+        )
+        graph.add_edge("log_no_pending", END)
+
+        # Main pipeline continues
         graph.add_edge("collect_metrics", "compare_impact")
         graph.add_edge("compare_impact", "evaluate_success")
         graph.add_edge("evaluate_success", "generate_learnings")
         graph.add_edge("generate_learnings", "save_feedback")
-        graph.add_edge("save_feedback", "notify")
-        graph.add_edge("notify", END)
+
+        # CONDITIONAL EDGE 2: Route notification based on success/failure ratio
+        graph.add_conditional_edges(
+            "save_feedback",
+            self._route_feedback_result,
+            {
+                "all_success": "notify_success",
+                "mixed_results": "notify_mixed",
+                "all_failed": "notify_failure"
+            }
+        )
+
+        # All notification paths end
+        graph.add_edge("notify_success", END)
+        graph.add_edge("notify_mixed", END)
+        graph.add_edge("notify_failure", END)
 
         return graph
+
+    def _route_has_pending(self, state: FeedbackCollectorState) -> str:
+        """
+        CONDITIONAL ROUTING: Check if there are pending actions for feedback.
+
+        Returns:
+            "no_pending" - No actions need feedback collection
+            "has_pending" - Actions found that need feedback
+        """
+        pending = state.get("pending_actions", [])
+
+        if not pending:
+            logger.info("routing_decision", route="no_pending", reason="No pending actions found")
+            return "no_pending"
+        else:
+            logger.info("routing_decision", route="has_pending", count=len(pending))
+            return "has_pending"
+
+    def _route_feedback_result(self, state: FeedbackCollectorState) -> str:
+        """
+        CONDITIONAL ROUTING: Route based on feedback success/failure ratio.
+
+        Returns:
+            "all_success" - All actions were successful
+            "mixed_results" - Some successful, some failed
+            "all_failed" - All actions failed
+        """
+        successful = state.get("successful_count", 0)
+        failed = state.get("failed_count", 0)
+        total = successful + failed
+
+        if total == 0:
+            logger.info("routing_decision", route="all_success", reason="No feedbacks to evaluate")
+            return "all_success"
+
+        if failed == 0:
+            logger.info(
+                "routing_decision",
+                route="all_success",
+                successful=successful,
+                total=total
+            )
+            return "all_success"
+
+        elif successful == 0:
+            logger.warning(
+                "routing_decision",
+                route="all_failed",
+                failed=failed,
+                total=total
+            )
+            return "all_failed"
+
+        else:
+            logger.info(
+                "routing_decision",
+                route="mixed_results",
+                successful=successful,
+                failed=failed,
+                total=total
+            )
+            return "mixed_results"
 
     # =========================================================================
     # NODE IMPLEMENTATIONS
@@ -592,29 +697,126 @@ KURALLAR:
 
         return state
 
-    async def notify_node(self, state: FeedbackCollectorState) -> FeedbackCollectorState:
-        """Send feedback summary notification."""
+    async def log_no_pending_node(self, state: FeedbackCollectorState) -> FeedbackCollectorState:
+        """
+        Log when no pending actions need feedback.
+
+        Reached via conditional edge when pending_actions is empty.
+        """
         try:
-            feedbacks = state.get("feedbacks", [])
-
-            if feedbacks:
-                await self._send_telegram_notification(state)
-
-            state = self.add_step(state, "notify")
-
             logger.info(
-                "notification_sent",
-                feedbacks_count=len(feedbacks)
+                "no_pending_feedback",
+                brand=state.get("brand"),
+                collection_date=state.get("collection_date"),
+                reason="No actions at T+1, T+3, or T+7 intervals"
             )
 
+            state = self.add_step(state, "log_no_pending")
+
         except Exception as e:
-            state["errors"].append(f"Notification failed: {str(e)}")
-            logger.error("notify_error", error=str(e))
+            state["errors"].append(f"Log no pending failed: {str(e)}")
 
         return state
 
-    async def _send_telegram_notification(self, state: FeedbackCollectorState) -> bool:
-        """Send feedback notification to Telegram."""
+    async def notify_success_node(self, state: FeedbackCollectorState) -> FeedbackCollectorState:
+        """
+        Send SUCCESS notification when all actions were successful.
+
+        Reached via conditional edge when failed_count == 0.
+        """
+        try:
+            await self._send_telegram_notification(
+                state,
+                notification_type="success",
+                title="✅ AKSİYON SONUÇLARI - HEPSİ BAŞARILI",
+                urgency=""
+            )
+
+            state = self.add_step(state, "notify_success")
+
+            logger.info(
+                "success_notification_sent",
+                successful=state.get("successful_count", 0)
+            )
+
+        except Exception as e:
+            state["errors"].append(f"Success notification failed: {str(e)}")
+            logger.error("notify_success_error", error=str(e))
+
+        return state
+
+    async def notify_mixed_node(self, state: FeedbackCollectorState) -> FeedbackCollectorState:
+        """
+        Send MIXED notification when some actions succeeded, some failed.
+
+        Reached via conditional edge when both successful and failed > 0.
+        """
+        try:
+            await self._send_telegram_notification(
+                state,
+                notification_type="mixed",
+                title="⚠️ AKSİYON SONUÇLARI - KARIŞIK",
+                urgency="Başarısız aksiyonlar incelenmeli"
+            )
+
+            state = self.add_step(state, "notify_mixed")
+
+            logger.info(
+                "mixed_notification_sent",
+                successful=state.get("successful_count", 0),
+                failed=state.get("failed_count", 0)
+            )
+
+        except Exception as e:
+            state["errors"].append(f"Mixed notification failed: {str(e)}")
+            logger.error("notify_mixed_error", error=str(e))
+
+        return state
+
+    async def notify_failure_node(self, state: FeedbackCollectorState) -> FeedbackCollectorState:
+        """
+        Send FAILURE notification when all actions failed.
+
+        Reached via conditional edge when successful_count == 0 and failed > 0.
+        This requires attention to review the action strategy.
+        """
+        try:
+            await self._send_telegram_notification(
+                state,
+                notification_type="failure",
+                title="🔴 AKSİYON SONUÇLARI - HEPSİ BAŞARISIZ",
+                urgency="ACİL: Aksiyon stratejisi gözden geçirilmeli"
+            )
+
+            state = self.add_step(state, "notify_failure")
+
+            logger.warning(
+                "failure_notification_sent",
+                failed=state.get("failed_count", 0)
+            )
+
+        except Exception as e:
+            state["errors"].append(f"Failure notification failed: {str(e)}")
+            logger.error("notify_failure_error", error=str(e))
+
+        return state
+
+    async def _send_telegram_notification(
+        self,
+        state: FeedbackCollectorState,
+        notification_type: str = "info",
+        title: str = "AKSİYON GERİ BİLDİRİM RAPORU",
+        urgency: str = ""
+    ) -> bool:
+        """
+        Send feedback notification to Telegram.
+
+        Args:
+            state: Current feedback collector state
+            notification_type: "success", "mixed", "failure", or "info"
+            title: Notification title with emoji
+            urgency: Urgency message
+        """
         try:
             bot_token = os.getenv("TELEGRAM_BOT_TOKEN_ANALYTICS")
             chat_id = os.getenv("TELEGRAM_CHAT_ID_ANALYTICS")
@@ -626,7 +828,7 @@ KURALLAR:
             failed = state.get("failed_count", 0)
             total = successful + failed
 
-            message = f"""📊 **AKSİYON GERİ BİLDİRİM RAPORU**
+            message = f"""{title}
 
 **Marka:** {state['brand']}
 **Tarih:** {state['collection_date']}
@@ -636,17 +838,39 @@ KURALLAR:
 - ❌ Başarısız: {failed}/{total}
 
 """
-            # Add learnings
+
+            # Type-specific content
+            if notification_type == "success":
+                message += "\n🎯 **BAŞARILI AKSİYONLAR:**\n"
+                for fb in state.get("feedbacks", []):
+                    if fb.get("success"):
+                        impact = fb.get("actual_impact", {})
+                        message += f"• {fb.get('action_title')}\n"
+                        if impact.get("roas_change"):
+                            message += f"  └ ROAS: +{impact['roas_change']:.2f}\n"
+
+            elif notification_type == "failure":
+                message += "\n🔴 **BAŞARISIZ AKSİYONLAR:**\n"
+                for fb in state.get("feedbacks", []):
+                    if not fb.get("success"):
+                        message += f"• {fb.get('action_title')}\n"
+                        message += f"  └ Neden: {fb.get('success_reason', 'Bilinmiyor')}\n"
+
+            elif notification_type == "mixed":
+                message += "\n⚠️ **BAŞARISIZ AKSİYONLAR:**\n"
+                for fb in state.get("feedbacks", []):
+                    if not fb.get("success"):
+                        message += f"• {fb.get('action_title')}: {fb.get('success_reason', 'N/A')}\n"
+
+            # Add learnings (for all types)
             learnings = state.get("learnings_generated", [])
             if learnings:
-                message += "\n**ÖĞRENİLEN DERSLER:**\n"
+                message += "\n📚 **ÖĞRENİLEN DERSLER:**\n"
                 for learning in learnings[:3]:
                     message += f"• {learning.get('insight', 'N/A')}\n"
 
-            # Add failed action details
-            for fb in state.get("feedbacks", []):
-                if not fb.get("success"):
-                    message += f"\n⚠️ **{fb.get('action_title')}:** {fb.get('success_reason')}"
+            if urgency:
+                message += f"\n⏰ **{urgency}**"
 
             message += f"\n\n📁 Rapor: {state.get('report_path', 'N/A')}"
 

@@ -244,33 +244,142 @@ class ActionPlannerGraph(BaseAgentGraph):
         self._output_dir = Path(__file__).parent.parent / "agent_outputs" / "action_plans"
 
     def build_graph(self) -> StateGraph:
-        """Build action planner graph."""
+        """Build action planner graph with CONDITIONAL EDGES.
+
+        Flow:
+            load_context -> query_memory -> analyze_situation -> generate_actions ->
+            [CONDITIONAL: has_actions?]
+                -> no_actions: log_no_actions -> END
+                -> has_actions: prioritize -> determine_automation -> save_plan ->
+                   [CONDITIONAL: notification_type?]
+                       -> approval_needed: notify_approval_required -> END
+                       -> manual_only: notify_manual_actions -> END
+                       -> auto_only: log_auto_executed -> END
+
+        Conditional edges make branching VISIBLE in the graph structure.
+        """
         graph = StateGraph(ActionPlannerState)
 
-        # Add nodes
+        # Add nodes - Main pipeline
         graph.add_node("load_context", self.load_context_node)
         graph.add_node("query_memory", self.query_memory_node)
         graph.add_node("analyze_situation", self.analyze_situation_node)
         graph.add_node("generate_actions", self.generate_actions_node)
+
+        # Branching nodes - First decision point (has actions?)
+        graph.add_node("log_no_actions", self.log_no_actions_node)
+
+        # Main pipeline continues
         graph.add_node("prioritize", self.prioritize_actions_node)
         graph.add_node("determine_automation", self.determine_automation_node)
         graph.add_node("save_plan", self.save_plan_node)
-        graph.add_node("notify", self.notify_node)
+
+        # Branching nodes - Second decision point (notification type)
+        graph.add_node("notify_approval_required", self.notify_approval_required_node)
+        graph.add_node("notify_manual_actions", self.notify_manual_actions_node)
+        graph.add_node("log_auto_executed", self.log_auto_executed_node)
 
         # Entry point
         graph.set_entry_point("load_context")
 
-        # Sequential flow
+        # Sequential flow until first decision point
         graph.add_edge("load_context", "query_memory")
         graph.add_edge("query_memory", "analyze_situation")
         graph.add_edge("analyze_situation", "generate_actions")
-        graph.add_edge("generate_actions", "prioritize")
+
+        # CONDITIONAL EDGE 1: After generate_actions - check if any actions generated
+        graph.add_conditional_edges(
+            "generate_actions",
+            self._route_after_action_generation,
+            {
+                "no_actions": "log_no_actions",
+                "has_actions": "prioritize"
+            }
+        )
+
+        # No actions path ends
+        graph.add_edge("log_no_actions", END)
+
+        # Continue main pipeline
         graph.add_edge("prioritize", "determine_automation")
         graph.add_edge("determine_automation", "save_plan")
-        graph.add_edge("save_plan", "notify")
-        graph.add_edge("notify", END)
+
+        # CONDITIONAL EDGE 2: After save_plan - determine notification type
+        graph.add_conditional_edges(
+            "save_plan",
+            self._route_notification_type,
+            {
+                "approval_needed": "notify_approval_required",
+                "manual_only": "notify_manual_actions",
+                "auto_only": "log_auto_executed"
+            }
+        )
+
+        # All notification paths end
+        graph.add_edge("notify_approval_required", END)
+        graph.add_edge("notify_manual_actions", END)
+        graph.add_edge("log_auto_executed", END)
 
         return graph
+
+    def _route_after_action_generation(self, state: ActionPlannerState) -> str:
+        """
+        CONDITIONAL ROUTING: Check if any actions were generated.
+
+        Returns:
+            "no_actions" - No actionable recommendations (data looks good or no issues)
+            "has_actions" - Actions were generated, continue pipeline
+        """
+        actions = state.get("action_plans", [])
+
+        if not actions:
+            logger.info("routing_decision", route="no_actions", reason="No actions generated")
+            return "no_actions"
+        else:
+            logger.info("routing_decision", route="has_actions", action_count=len(actions))
+            return "has_actions"
+
+    def _route_notification_type(self, state: ActionPlannerState) -> str:
+        """
+        CONDITIONAL ROUTING: Determine notification type based on action categories.
+
+        Priority order:
+        1. If approval_required actions exist -> notify for approval
+        2. If only manual actions exist -> notify about manual tasks
+        3. If only auto actions -> just log success
+
+        Returns:
+            "approval_needed" - Actions need approval before execution
+            "manual_only" - Only manual actions, inform human
+            "auto_only" - All actions are auto-executable
+        """
+        approval_count = len(state.get("approval_required", []))
+        manual_count = len(state.get("manual_actions", []))
+        auto_count = len(state.get("auto_actions", []))
+
+        if approval_count > 0:
+            logger.info(
+                "routing_decision",
+                route="approval_needed",
+                approval_count=approval_count
+            )
+            return "approval_needed"
+
+        elif manual_count > 0:
+            logger.info(
+                "routing_decision",
+                route="manual_only",
+                manual_count=manual_count
+            )
+            return "manual_only"
+
+        else:
+            logger.info(
+                "routing_decision",
+                route="auto_only",
+                auto_count=auto_count
+            )
+            return "auto_only"
 
     # =========================================================================
     # NODE IMPLEMENTATIONS
@@ -645,30 +754,119 @@ KURALLAR:
 
         return state
 
-    async def notify_node(self, state: ActionPlannerState) -> ActionPlannerState:
-        """Send notification with action plan summary."""
-        try:
-            # Only notify if there are actions requiring attention
-            approval_count = len(state.get("approval_required", []))
-            manual_count = len(state.get("manual_actions", []))
-            auto_count = len(state.get("auto_actions", []))
+    async def log_no_actions_node(self, state: ActionPlannerState) -> ActionPlannerState:
+        """
+        Log when no actions were generated.
 
-            if approval_count > 0 or manual_count > 0:
-                await self._send_telegram_notification(state)
+        This node is reached via conditional edge when:
+        - LLM analysis found no issues or opportunities
+        - Data looks healthy, no actions needed
+        """
+        try:
+            logger.info(
+                "no_actions_generated",
+                brand=state.get("brand"),
+                date=state.get("date"),
+                validation_score=state.get("validation_score"),
+                reason="No actionable issues or opportunities identified"
+            )
+
+            state["notification_sent"] = False
+            state = self.add_step(state, "log_no_actions")
+
+        except Exception as e:
+            state["errors"].append(f"Log no actions failed: {str(e)}")
+            logger.error("log_no_actions_error", error=str(e))
+
+        return state
+
+    async def notify_approval_required_node(self, state: ActionPlannerState) -> ActionPlannerState:
+        """
+        Send notification for actions requiring approval.
+
+        This node is reached via conditional edge when:
+        - approval_required list has items
+        - Higher risk or higher impact actions need human decision
+        """
+        try:
+            await self._send_telegram_notification(
+                state,
+                notification_type="approval",
+                title="🔐 AKSİYON ONAY GEREKLİ",
+                urgency="24 saat içinde yanıt bekleniyor"
+            )
 
             state["notification_sent"] = True
-            state = self.add_step(state, "notify")
+            state = self.add_step(state, "notify_approval_required")
 
             logger.info(
-                "notification_sent",
-                auto=auto_count,
-                approval=approval_count,
-                manual=manual_count
+                "approval_notification_sent",
+                approval_count=len(state.get("approval_required", [])),
+                plan_id=state.get("plan_id")
             )
 
         except Exception as e:
-            state["errors"].append(f"Notification failed: {str(e)}")
-            logger.error("notify_error", error=str(e))
+            state["errors"].append(f"Approval notification failed: {str(e)}")
+            logger.error("notify_approval_required_error", error=str(e))
+
+        return state
+
+    async def notify_manual_actions_node(self, state: ActionPlannerState) -> ActionPlannerState:
+        """
+        Send notification for manual-only actions.
+
+        This node is reached via conditional edge when:
+        - Only manual_actions exist (no approval_required)
+        - These are tasks that require human execution
+        """
+        try:
+            await self._send_telegram_notification(
+                state,
+                notification_type="manual",
+                title="👤 MANUEL AKSİYON GEREKLİ",
+                urgency="Bu hafta içinde tamamlanmalı"
+            )
+
+            state["notification_sent"] = True
+            state = self.add_step(state, "notify_manual_actions")
+
+            logger.info(
+                "manual_notification_sent",
+                manual_count=len(state.get("manual_actions", [])),
+                plan_id=state.get("plan_id")
+            )
+
+        except Exception as e:
+            state["errors"].append(f"Manual notification failed: {str(e)}")
+            logger.error("notify_manual_actions_error", error=str(e))
+
+        return state
+
+    async def log_auto_executed_node(self, state: ActionPlannerState) -> ActionPlannerState:
+        """
+        Log when all actions are auto-executable.
+
+        This node is reached via conditional edge when:
+        - Only auto_actions exist
+        - All actions can be executed without human intervention
+        """
+        try:
+            auto_count = len(state.get("auto_actions", []))
+
+            logger.info(
+                "auto_actions_ready",
+                auto_count=auto_count,
+                plan_id=state.get("plan_id"),
+                brand=state.get("brand"),
+                message=f"{auto_count} actions ready for automatic execution"
+            )
+
+            state["notification_sent"] = False  # No notification needed for auto-only
+            state = self.add_step(state, "log_auto_executed")
+
+        except Exception as e:
+            state["errors"].append(f"Log auto executed failed: {str(e)}")
+            logger.error("log_auto_executed_error", error=str(e))
 
         return state
 
@@ -729,8 +927,22 @@ KURALLAR:
 
         return round(score, 2)
 
-    async def _send_telegram_notification(self, state: ActionPlannerState) -> bool:
-        """Send action plan notification to Telegram."""
+    async def _send_telegram_notification(
+        self,
+        state: ActionPlannerState,
+        notification_type: str = "info",
+        title: str = "AKSİYON PLANI",
+        urgency: str = ""
+    ) -> bool:
+        """
+        Send action plan notification to Telegram.
+
+        Args:
+            state: Current planner state
+            notification_type: "approval", "manual", or "info"
+            title: Notification title with emoji
+            urgency: Urgency message
+        """
         try:
             bot_token = os.getenv("TELEGRAM_BOT_TOKEN_ANALYTICS")
             chat_id = os.getenv("TELEGRAM_CHAT_ID_ANALYTICS")
@@ -743,7 +955,7 @@ KURALLAR:
             approval_count = len(state.get("approval_required", []))
             manual_count = len(state.get("manual_actions", []))
 
-            message = f"""📋 **AKSİYON PLANI**
+            message = f"""{title}
 
 **Marka:** {state['brand']}
 **Tarih:** {state['date']}
@@ -758,13 +970,26 @@ KURALLAR:
 - 👤 Manuel: {manual_count}
 
 """
-            # Add approval required actions
-            if state.get("approval_required"):
-                message += "\n🔐 **ONAY BEKLEYEN:**\n"
-                for action in state["approval_required"][:3]:
-                    message += f"• {action.get('title', 'N/A')}\n"
 
-            message += "\n📁 Detaylar: agent_outputs/action_plans/"
+            # Type-specific content
+            if notification_type == "approval" and state.get("approval_required"):
+                message += "\n🔐 **ONAY BEKLEYEN AKSİYONLAR:**\n"
+                for action in state["approval_required"][:3]:
+                    priority = action.get('priority', 'N/A')
+                    priority_icon = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(priority, "⚪")
+                    message += f"• {priority_icon} {action.get('title', 'N/A')}\n"
+                    message += f"  └ Risk: {action.get('risk_level', 'N/A')} | Etki: {action.get('expected_impact', 'N/A')}\n"
+
+            elif notification_type == "manual" and state.get("manual_actions"):
+                message += "\n👤 **MANUEL GÖREVLER:**\n"
+                for action in state["manual_actions"][:3]:
+                    message += f"• {action.get('title', 'N/A')}\n"
+                    message += f"  └ Platform: {action.get('target_platform', 'N/A')}\n"
+
+            if urgency:
+                message += f"\n⏰ **Süre:** {urgency}"
+
+            message += "\n\n📁 Detaylar: agent_outputs/action_plans/"
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(

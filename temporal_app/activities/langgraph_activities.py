@@ -281,9 +281,337 @@ async def run_daily_analytics_graph(
         raise
 
 
+# =============================================================================
+# VALIDATOR GRAPH ACTIVITY
+# =============================================================================
+
+@activity.defn
+async def run_validator_graph(
+    raw_data: Dict[str, Any],
+    brand: str = "pomandi",
+    days: int = 7
+) -> Dict[str, Any]:
+    """
+    Run data validator LangGraph workflow.
+
+    Validates collected data through:
+    - Duplicate detection
+    - Cross-source verification
+    - Anomaly detection
+    - Quality score calculation
+
+    Args:
+        raw_data: Collected data from all sources
+        brand: Brand name ("pomandi" or "costume")
+        days: Number of days analyzed
+
+    Returns:
+        Validation result with score, anomalies, and proceed decision
+    """
+    activity.logger.info(
+        f"Running validator graph: brand={brand}, sources={len(raw_data)}"
+    )
+
+    start_time = time.time()
+    status = "completed"
+
+    try:
+        from langgraph_agents import DataValidatorGraph
+
+        graph = DataValidatorGraph()
+        await graph.initialize()
+
+        result = await graph.validate(raw_data, brand=brand, days=days)
+
+        duration = time.time() - start_time
+
+        activity.logger.info(
+            f"Validation complete: score={result['validation_score']:.0%}, "
+            f"proceed={result['proceed_to_analysis']}, "
+            f"anomalies={len(result.get('anomalies', []))}"
+        )
+
+        if METRICS_AVAILABLE:
+            WorkflowMetrics.activity_execution_total.labels(
+                activity_name="validator_graph",
+                status=status
+            ).inc()
+
+        await graph.close()
+
+        return {
+            "validation_score": result.get("validation_score", 0.0),
+            "proceed_to_analysis": result.get("proceed_to_analysis", False),
+            "duplicates": result.get("duplicates", [])[:10],
+            "anomalies": result.get("anomalies", [])[:20],
+            "cross_source_conflicts": result.get("cross_source_conflicts", [])[:10],
+            "requires_human_review": result.get("requires_human_review", []),
+            "validation_report": result.get("validation_report", ""),
+            "dedup_stats": result.get("dedup_stats", {}),
+            "errors": list(set(result.get("errors", [])))[:20],
+            "duration_seconds": duration
+        }
+
+    except Exception as e:
+        status = "failed"
+        activity.logger.error(f"Validator graph failed: {str(e)}")
+        if METRICS_AVAILABLE:
+            WorkflowMetrics.activity_execution_total.labels(
+                activity_name="validator_graph",
+                status=status
+            ).inc()
+        raise
+
+
+# =============================================================================
+# ACTION PLANNER GRAPH ACTIVITY
+# =============================================================================
+
+@activity.defn
+async def run_action_planner_graph(
+    validated_data: Dict[str, Any],
+    analysis_reports: Dict[str, Any],
+    brand: str = "pomandi"
+) -> Dict[str, Any]:
+    """
+    Run action planner LangGraph workflow.
+
+    Generates actionable recommendations based on validated data
+    and analysis reports.
+
+    Args:
+        validated_data: Output from validator graph
+        analysis_reports: Analysis reports from daily analytics
+        brand: Brand name
+
+    Returns:
+        Action plan with prioritized recommendations
+    """
+    activity.logger.info(
+        f"Running action planner graph: brand={brand}, "
+        f"validation_score={validated_data.get('validation_score', 0):.0%}"
+    )
+
+    start_time = time.time()
+    status = "completed"
+
+    try:
+        from langgraph_agents import ActionPlannerGraph
+
+        graph = ActionPlannerGraph()
+        await graph.initialize()
+
+        result = await graph.plan_actions(
+            validated_data=validated_data,
+            analysis_reports=analysis_reports,
+            brand=brand
+        )
+
+        duration = time.time() - start_time
+
+        actions = result.get("actions", [])
+        activity.logger.info(
+            f"Action planning complete: actions={len(actions)}, "
+            f"auto={sum(1 for a in actions if a.get('action_type') == 'automated')}, "
+            f"manual={sum(1 for a in actions if a.get('action_type') == 'manual')}"
+        )
+
+        if METRICS_AVAILABLE:
+            WorkflowMetrics.activity_execution_total.labels(
+                activity_name="action_planner_graph",
+                status=status
+            ).inc()
+
+        await graph.close()
+
+        return {
+            "actions": actions[:20],  # Max 20 actions
+            "action_count": len(actions),
+            "auto_actions": [a for a in actions if a.get("action_type") == "automated"][:10],
+            "approval_required": [a for a in actions if a.get("action_type") == "requires_approval"][:10],
+            "manual_actions": [a for a in actions if a.get("action_type") == "manual"][:10],
+            "plan_saved": result.get("plan_saved", False),
+            "plan_path": result.get("plan_path"),
+            "errors": list(set(result.get("errors", [])))[:20],
+            "duration_seconds": duration
+        }
+
+    except Exception as e:
+        status = "failed"
+        activity.logger.error(f"Action planner graph failed: {str(e)}")
+        if METRICS_AVAILABLE:
+            WorkflowMetrics.activity_execution_total.labels(
+                activity_name="action_planner_graph",
+                status=status
+            ).inc()
+        raise
+
+
+# =============================================================================
+# EXECUTOR GRAPH ACTIVITY
+# =============================================================================
+
+@activity.defn
+async def run_executor_graph(
+    actions_to_execute: list,
+    brand: str = "pomandi",
+    dry_run: bool = True  # Default to dry_run for safety
+) -> Dict[str, Any]:
+    """
+    Run action executor LangGraph workflow.
+
+    Executes approved actions via MCP tool calls with safety checks.
+
+    Args:
+        actions_to_execute: List of actions to execute (from action planner)
+        brand: Brand name
+        dry_run: If True, simulate execution without actual changes
+
+    Returns:
+        Execution results with success/failure status
+    """
+    activity.logger.info(
+        f"Running executor graph: brand={brand}, "
+        f"actions={len(actions_to_execute)}, dry_run={dry_run}"
+    )
+
+    start_time = time.time()
+    status = "completed"
+
+    try:
+        from langgraph_agents import ActionExecutorGraph
+
+        graph = ActionExecutorGraph()
+        await graph.initialize()
+
+        result = await graph.execute_actions(
+            actions=actions_to_execute,
+            brand=brand,
+            dry_run=dry_run
+        )
+
+        duration = time.time() - start_time
+
+        activity.logger.info(
+            f"Execution complete: successful={result.get('successful_count', 0)}, "
+            f"failed={result.get('failed_count', 0)}, "
+            f"skipped={result.get('skipped_count', 0)}"
+        )
+
+        if METRICS_AVAILABLE:
+            WorkflowMetrics.activity_execution_total.labels(
+                activity_name="executor_graph",
+                status=status
+            ).inc()
+
+        await graph.close()
+
+        return {
+            "successful_count": result.get("successful_count", 0),
+            "failed_count": result.get("failed_count", 0),
+            "skipped_count": result.get("skipped_count", 0),
+            "execution_results": result.get("execution_results", [])[:20],
+            "safety_checks_passed": result.get("safety_checks_passed", False),
+            "safety_issues": result.get("safety_issues", [])[:10],
+            "rollback_results": result.get("rollback_results", [])[:10],
+            "execution_log_path": result.get("execution_log_path"),
+            "notification_sent": result.get("notification_sent", False),
+            "dry_run": dry_run,
+            "errors": list(set(result.get("errors", [])))[:20],
+            "duration_seconds": duration
+        }
+
+    except Exception as e:
+        status = "failed"
+        activity.logger.error(f"Executor graph failed: {str(e)}")
+        if METRICS_AVAILABLE:
+            WorkflowMetrics.activity_execution_total.labels(
+                activity_name="executor_graph",
+                status=status
+            ).inc()
+        raise
+
+
+# =============================================================================
+# FEEDBACK COLLECTOR GRAPH ACTIVITY
+# =============================================================================
+
+@activity.defn
+async def run_feedback_collector_graph(
+    brand: str = "pomandi"
+) -> Dict[str, Any]:
+    """
+    Run feedback collector LangGraph workflow.
+
+    Collects T+1, T+3, T+7 feedback on executed actions to measure
+    impact and generate learnings.
+
+    Args:
+        brand: Brand name
+
+    Returns:
+        Feedback results with success/failure analysis and learnings
+    """
+    activity.logger.info(f"Running feedback collector graph: brand={brand}")
+
+    start_time = time.time()
+    status = "completed"
+
+    try:
+        from langgraph_agents import FeedbackCollectorGraph
+
+        graph = FeedbackCollectorGraph()
+        await graph.initialize()
+
+        result = await graph.collect_feedback(brand=brand)
+
+        duration = time.time() - start_time
+
+        activity.logger.info(
+            f"Feedback collection complete: successful={result.get('successful_count', 0)}, "
+            f"failed={result.get('failed_count', 0)}, "
+            f"pending={result.get('pending_count', 0)}"
+        )
+
+        if METRICS_AVAILABLE:
+            WorkflowMetrics.activity_execution_total.labels(
+                activity_name="feedback_collector_graph",
+                status=status
+            ).inc()
+
+        await graph.close()
+
+        return {
+            "successful_count": result.get("successful_count", 0),
+            "failed_count": result.get("failed_count", 0),
+            "pending_count": result.get("pending_count", 0),
+            "feedbacks": result.get("feedbacks", [])[:20],
+            "learnings_generated": result.get("learnings_generated", [])[:10],
+            "feedback_saved": result.get("feedback_saved", False),
+            "memory_saved": result.get("memory_saved", False),
+            "report_path": result.get("report_path"),
+            "errors": list(set(result.get("errors", [])))[:20],
+            "duration_seconds": duration
+        }
+
+    except Exception as e:
+        status = "failed"
+        activity.logger.error(f"Feedback collector graph failed: {str(e)}")
+        if METRICS_AVAILABLE:
+            WorkflowMetrics.activity_execution_total.labels(
+                activity_name="feedback_collector_graph",
+                status=status
+            ).inc()
+        raise
+
+
 # Activity list for worker registration
 LANGGRAPH_ACTIVITIES = [
     run_invoice_matcher_graph,
     run_feed_publisher_graph,
-    run_daily_analytics_graph
+    run_daily_analytics_graph,
+    run_validator_graph,
+    run_action_planner_graph,
+    run_executor_graph,
+    run_feedback_collector_graph
 ]

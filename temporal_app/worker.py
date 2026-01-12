@@ -17,7 +17,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 # Import workflows
 from temporal_app.workflows.feed_publisher import FeedPublisherWorkflow
 from temporal_app.workflows.appointment_collector import AppointmentCollectorWorkflow
-from temporal_app.workflows.daily_analytics import DailyAnalyticsWorkflow, WeeklyAnalyticsWorkflow
+from temporal_app.workflows.daily_analytics import (
+    DailyAnalyticsWorkflow,
+    WeeklyAnalyticsWorkflow,
+    FeedbackCollectionWorkflow  # New: T+1/T+3/T+7 feedback loop
+)
 from temporal_app.workflows.email_assistant_workflow import EmailAssistantWorkflow, DailyEmailSummaryWorkflow
 from temporal_app.workflows.seo_landing_optimizer import SEOLandingOptimizerWorkflow, SEOWeeklyReportWorkflow
 
@@ -42,6 +46,10 @@ from temporal_app.activities.langgraph_wrapper import (
 )
 from temporal_app.activities.langgraph_activities import (
     run_daily_analytics_graph,
+    run_validator_graph,           # New: Data validation
+    run_action_planner_graph,      # New: Action planning
+    run_executor_graph,            # New: Action execution
+    run_feedback_collector_graph,  # New: Feedback collection
 )
 from temporal_app.activities.email_activities import (
     send_daily_email_summary,
@@ -90,8 +98,11 @@ async def run_worker():
     workflows = [
         FeedPublisherWorkflow,
         AppointmentCollectorWorkflow,
-        DailyAnalyticsWorkflow,
-        WeeklyAnalyticsWorkflow,
+        # Core Analytics Pipeline (integrated)
+        DailyAnalyticsWorkflow,      # Full pipeline: collect → validate → plan → execute
+        WeeklyAnalyticsWorkflow,     # Extended 14-day analysis
+        FeedbackCollectionWorkflow,  # T+1/T+3/T+7 feedback loop
+        # Email & SEO
         EmailAssistantWorkflow,
         DailyEmailSummaryWorkflow,
         SEOLandingOptimizerWorkflow,
@@ -116,6 +127,11 @@ async def run_worker():
         check_caption_duplicate,
         # LangGraph activities (full graph execution)
         run_daily_analytics_graph,
+        # New Pipeline Activities
+        run_validator_graph,
+        run_action_planner_graph,
+        run_executor_graph,
+        run_feedback_collector_graph,
         # Email assistant activities
         send_daily_email_summary,
         run_email_assistant_check,
@@ -163,6 +179,11 @@ async def run_worker():
     logger.info("    - check_caption_duplicate")
     logger.info("  LangGraph activities:")
     logger.info("    - run_daily_analytics_graph")
+    logger.info("  Pipeline activities (NEW):")
+    logger.info("    - run_validator_graph")
+    logger.info("    - run_action_planner_graph")
+    logger.info("    - run_executor_graph")
+    logger.info("    - run_feedback_collector_graph")
     logger.info("=" * 60)
     logger.info("🎧 Listening for workflow tasks...")
     logger.info("Press Ctrl+C to stop")

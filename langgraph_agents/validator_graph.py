@@ -165,12 +165,18 @@ class DataValidatorGraph(BaseAgentGraph):
         self._mcp_dir = Path(__file__).parent.parent / "mcp-servers"
 
     def build_graph(self) -> StateGraph:
-        """Build validation graph.
+        """Build validation graph with CONDITIONAL EDGES.
 
         Flow:
             load_data -> detect_duplicates -> cross_source_verify ->
-            detect_anomalies -> calculate_quality_score -> generate_report ->
-            send_alerts -> END
+            detect_anomalies -> calculate_quality -> generate_report ->
+            [CONDITIONAL ROUTING based on validation results]
+                -> "critical": send_critical_alert -> END
+                -> "review": send_review_alert -> END
+                -> "proceed": END (no alert needed)
+
+        Conditional edges make branching VISIBLE in the graph structure,
+        not hidden inside nodes.
         """
         graph = StateGraph(ValidationState)
 
@@ -181,21 +187,88 @@ class DataValidatorGraph(BaseAgentGraph):
         graph.add_node("detect_anomalies", self.detect_anomalies_node)
         graph.add_node("calculate_quality", self.calculate_quality_score_node)
         graph.add_node("generate_report", self.generate_report_node)
-        graph.add_node("send_alerts", self.send_alerts_node)
+
+        # Alert nodes (branching targets)
+        graph.add_node("send_critical_alert", self.send_critical_alert_node)
+        graph.add_node("send_review_alert", self.send_review_alert_node)
+        graph.add_node("log_success", self.log_success_node)
 
         # Entry point
         graph.set_entry_point("load_data")
 
-        # Sequential edges
+        # Sequential edges (validation pipeline)
         graph.add_edge("load_data", "detect_duplicates")
         graph.add_edge("detect_duplicates", "cross_source_verify")
         graph.add_edge("cross_source_verify", "detect_anomalies")
         graph.add_edge("detect_anomalies", "calculate_quality")
         graph.add_edge("calculate_quality", "generate_report")
-        graph.add_edge("generate_report", "send_alerts")
-        graph.add_edge("send_alerts", END)
+
+        # CONDITIONAL EDGES - Branching is now VISIBLE in graph structure
+        graph.add_conditional_edges(
+            "generate_report",
+            self._route_after_validation,
+            {
+                "critical": "send_critical_alert",
+                "review": "send_review_alert",
+                "proceed": "log_success"
+            }
+        )
+
+        # All branches lead to END
+        graph.add_edge("send_critical_alert", END)
+        graph.add_edge("send_review_alert", END)
+        graph.add_edge("log_success", END)
 
         return graph
+
+    def _route_after_validation(self, state: ValidationState) -> str:
+        """
+        CONDITIONAL ROUTING FUNCTION - Determines next step based on validation results.
+
+        This function makes the decision logic EXPLICIT and VISIBLE.
+        Rules are defined here, not hidden in node implementations.
+
+        Returns:
+            "critical" - Validation failed, analysis should NOT proceed
+            "review"   - Validation passed but human review needed
+            "proceed"  - All good, proceed to analysis
+        """
+        proceed = state.get("proceed_to_analysis", False)
+        requires_review = state.get("requires_human_review", [])
+        score = state.get("validation_score", 0.0)
+
+        # Critical anomalies detected
+        critical_anomalies = [
+            a for a in state.get("anomalies", [])
+            if a.get("severity") == "critical"
+        ]
+
+        # Decision tree (EXPLICIT RULES)
+        if not proceed or score < 0.5:
+            logger.info(
+                "routing_decision",
+                route="critical",
+                score=score,
+                proceed=proceed
+            )
+            return "critical"
+
+        elif requires_review or critical_anomalies:
+            logger.info(
+                "routing_decision",
+                route="review",
+                requires_review=requires_review,
+                critical_count=len(critical_anomalies)
+            )
+            return "review"
+
+        else:
+            logger.info(
+                "routing_decision",
+                route="proceed",
+                score=score
+            )
+            return "proceed"
 
     # =========================================================================
     # NODE IMPLEMENTATIONS
@@ -556,23 +629,88 @@ class DataValidatorGraph(BaseAgentGraph):
 
         return state
 
-    async def send_alerts_node(self, state: ValidationState) -> ValidationState:
-        """Send alerts for critical issues."""
+    async def send_critical_alert_node(self, state: ValidationState) -> ValidationState:
+        """
+        Send CRITICAL alert - Validation failed, analysis should NOT proceed.
+
+        This node is only reached via conditional edge when:
+        - proceed_to_analysis is False
+        - OR validation_score < 0.5
+        """
         try:
-            score = state["validation_score"]
-            proceed = state["proceed_to_analysis"]
-            review_list = state.get("requires_human_review", [])
+            await self._send_telegram_alert(
+                state,
+                alert_type="critical",
+                title="🔴 KRİTİK VERİ DOĞRULAMA HATASI",
+                action_required="Analiz DURDURULDU - Acil inceleme gerekli"
+            )
 
-            # Only send alert if there are critical issues
-            if not proceed or review_list:
-                await self._send_telegram_alert(state)
-
-            state = self.add_step(state, "send_alerts")
-            logger.info("alerts_sent", score=score, proceed=proceed)
+            state = self.add_step(state, "send_critical_alert")
+            logger.warning(
+                "critical_alert_sent",
+                score=state.get("validation_score"),
+                anomaly_count=len(state.get("anomalies", []))
+            )
 
         except Exception as e:
-            state["errors"].append(f"Alert sending failed: {str(e)}")
-            logger.error("send_alerts_error", error=str(e))
+            state["errors"].append(f"Critical alert failed: {str(e)}")
+            logger.error("send_critical_alert_error", error=str(e))
+
+        return state
+
+    async def send_review_alert_node(self, state: ValidationState) -> ValidationState:
+        """
+        Send REVIEW alert - Validation passed but human review recommended.
+
+        This node is only reached via conditional edge when:
+        - proceed_to_analysis is True
+        - AND requires_human_review has items OR critical anomalies exist
+        """
+        try:
+            review_list = state.get("requires_human_review", [])
+
+            await self._send_telegram_alert(
+                state,
+                alert_type="review",
+                title="🟠 VERİ İNCELEME GEREKLİ",
+                action_required=f"İncelenmesi gereken kaynaklar: {', '.join(review_list)}"
+            )
+
+            state = self.add_step(state, "send_review_alert")
+            logger.info(
+                "review_alert_sent",
+                score=state.get("validation_score"),
+                review_items=review_list
+            )
+
+        except Exception as e:
+            state["errors"].append(f"Review alert failed: {str(e)}")
+            logger.error("send_review_alert_error", error=str(e))
+
+        return state
+
+    async def log_success_node(self, state: ValidationState) -> ValidationState:
+        """
+        Log successful validation - No alerts needed, proceed to analysis.
+
+        This node is only reached via conditional edge when:
+        - proceed_to_analysis is True
+        - AND no human review required
+        - AND no critical anomalies
+        """
+        try:
+            state = self.add_step(state, "log_success")
+            logger.info(
+                "validation_passed",
+                score=state.get("validation_score"),
+                brand=state.get("brand"),
+                date=state.get("date"),
+                proceed=True
+            )
+
+        except Exception as e:
+            state["errors"].append(f"Log success failed: {str(e)}")
+            logger.error("log_success_error", error=str(e))
 
         return state
 
@@ -597,8 +735,22 @@ class DataValidatorGraph(BaseAgentGraph):
             logger.warning("historical_context_fetch_failed", error=str(e))
             return {}
 
-    async def _send_telegram_alert(self, state: ValidationState) -> bool:
-        """Send validation alert to Telegram."""
+    async def _send_telegram_alert(
+        self,
+        state: ValidationState,
+        alert_type: str = "info",
+        title: str = "VERİ DOĞRULAMA BİLDİRİMİ",
+        action_required: str = ""
+    ) -> bool:
+        """
+        Send validation alert to Telegram.
+
+        Args:
+            state: Current validation state
+            alert_type: "critical", "review", or "info"
+            title: Alert title with emoji
+            action_required: Specific action message
+        """
         try:
             bot_token = os.getenv("TELEGRAM_BOT_TOKEN_ANALYTICS")
             chat_id = os.getenv("TELEGRAM_CHAT_ID_ANALYTICS")
@@ -607,27 +759,41 @@ class DataValidatorGraph(BaseAgentGraph):
                 logger.warning("telegram_config_missing")
                 return False
 
-            # Build alert message
+            # Build alert message based on type
             score = state["validation_score"]
             proceed = state["proceed_to_analysis"]
             conflicts = len(state.get("cross_source_conflicts", []))
             anomalies = len(state.get("anomalies", []))
             review = state.get("requires_human_review", [])
 
-            message = f"""🔍 **VERİ DOĞRULAMA UYARISI**
+            # Type-specific formatting
+            if alert_type == "critical":
+                status_line = "❌ **DURUM:** ANALİZE DEVAM EDİLMİYOR"
+                urgency = "⏰ **Aciliyet:** HEMEN"
+            elif alert_type == "review":
+                status_line = "⚠️ **DURUM:** İnceleme sonrası devam edilebilir"
+                urgency = "⏰ **Aciliyet:** Bugün içinde"
+            else:
+                status_line = "✅ **DURUM:** Normal"
+                urgency = ""
+
+            message = f"""{title}
 
 **Marka:** {state['brand']}
 **Tarih:** {state['date']}
 **Validation Score:** {score:.0%}
 
-⚠️ **Sorunlar:**
+{status_line}
+
+📊 **Detaylar:**
 - Tutarsızlıklar: {conflicts}
 - Anomaliler: {anomalies}
+- İnceleme gereken: {len(review)}
 
-{'❌ **ANALİZE DEVAM EDİLMİYOR**' if not proceed else ''}
-{'👤 **İnceleme Gerekli:** ' + ', '.join(review) if review else ''}
+{f'🎯 **Aksiyon:** {action_required}' if action_required else ''}
+{urgency}
 
-Detaylar için agent_outputs/daily_analytics/ klasörünü kontrol edin."""
+📁 Rapor: agent_outputs/daily_analytics/"""
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -641,7 +807,7 @@ Detaylar için agent_outputs/daily_analytics/ klasörünü kontrol edin."""
                 )
 
                 if response.status_code == 200:
-                    logger.info("validation_alert_sent")
+                    logger.info("validation_alert_sent", alert_type=alert_type)
                     return True
                 else:
                     logger.error("validation_alert_failed", status=response.status_code)

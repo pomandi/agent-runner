@@ -195,29 +195,201 @@ class ActionExecutorGraph(BaseAgentGraph):
         self._output_dir = Path(__file__).parent.parent / "agent_outputs" / "execution_logs"
 
     def build_graph(self) -> StateGraph:
-        """Build executor graph."""
+        """Build executor graph with CONDITIONAL EDGES and SAFETY GATES.
+
+        Flow:
+            load_actions ->
+            [GATE 1: has_actions?]
+                -> no_actions: log_no_actions -> END
+                -> has_actions: safety_check ->
+                   [GATE 2: safety_passed?]
+                       -> safety_failed: notify_safety_block -> END
+                       -> safety_passed: execute_actions -> log_results ->
+                          [GATE 3: execution_status?]
+                              -> all_success: notify_success -> END
+                              -> has_failures: handle_failures ->
+                                 [GATE 4: rollback_result?]
+                                     -> rollback_success: notify_partial_success -> END
+                                     -> rollback_failed: notify_failure -> END
+                              -> all_skipped: log_skipped -> END
+
+        Safety Gates:
+        1. No empty execution (GATE 1)
+        2. Safety check must pass (GATE 2)
+        3. Execution result routing (GATE 3)
+        4. Rollback result routing (GATE 4)
+        """
         graph = StateGraph(ExecutorState)
 
-        # Add nodes
+        # Add main pipeline nodes
         graph.add_node("load_actions", self.load_actions_node)
         graph.add_node("safety_check", self.safety_check_node)
         graph.add_node("execute_actions", self.execute_actions_node)
         graph.add_node("log_results", self.log_results_node)
         graph.add_node("handle_failures", self.handle_failures_node)
-        graph.add_node("notify", self.notify_node)
+
+        # Add branching nodes (Safety Gate targets)
+        graph.add_node("log_no_actions", self.log_no_actions_node)
+        graph.add_node("notify_safety_block", self.notify_safety_block_node)
+        graph.add_node("notify_success", self.notify_success_node)
+        graph.add_node("notify_partial_success", self.notify_partial_success_node)
+        graph.add_node("notify_failure", self.notify_failure_node)
+        graph.add_node("log_skipped", self.log_skipped_node)
 
         # Entry point
         graph.set_entry_point("load_actions")
 
-        # Flow
-        graph.add_edge("load_actions", "safety_check")
-        graph.add_edge("safety_check", "execute_actions")
+        # SAFETY GATE 1: Check if there are actions to execute
+        graph.add_conditional_edges(
+            "load_actions",
+            self._gate_has_actions,
+            {
+                "no_actions": "log_no_actions",
+                "has_actions": "safety_check"
+            }
+        )
+        graph.add_edge("log_no_actions", END)
+
+        # SAFETY GATE 2: Check if safety checks passed
+        graph.add_conditional_edges(
+            "safety_check",
+            self._gate_safety_passed,
+            {
+                "safety_failed": "notify_safety_block",
+                "safety_passed": "execute_actions"
+            }
+        )
+        graph.add_edge("notify_safety_block", END)
+
+        # Continue main pipeline
         graph.add_edge("execute_actions", "log_results")
-        graph.add_edge("log_results", "handle_failures")
-        graph.add_edge("handle_failures", "notify")
-        graph.add_edge("notify", END)
+
+        # SAFETY GATE 3: Check execution status
+        graph.add_conditional_edges(
+            "log_results",
+            self._gate_execution_status,
+            {
+                "all_success": "notify_success",
+                "has_failures": "handle_failures",
+                "all_skipped": "log_skipped"
+            }
+        )
+        graph.add_edge("notify_success", END)
+        graph.add_edge("log_skipped", END)
+
+        # SAFETY GATE 4: Check rollback result
+        graph.add_conditional_edges(
+            "handle_failures",
+            self._gate_rollback_result,
+            {
+                "rollback_success": "notify_partial_success",
+                "rollback_failed": "notify_failure"
+            }
+        )
+        graph.add_edge("notify_partial_success", END)
+        graph.add_edge("notify_failure", END)
 
         return graph
+
+    # =========================================================================
+    # SAFETY GATE FUNCTIONS (Conditional Routing)
+    # =========================================================================
+
+    def _gate_has_actions(self, state: ExecutorState) -> str:
+        """
+        SAFETY GATE 1: Check if there are actions to execute.
+
+        Prevents empty execution runs.
+        """
+        actions = state.get("actions_to_execute", [])
+
+        if not actions:
+            logger.info("gate_decision", gate="has_actions", result="no_actions")
+            return "no_actions"
+        else:
+            logger.info("gate_decision", gate="has_actions", result="has_actions", count=len(actions))
+            return "has_actions"
+
+    def _gate_safety_passed(self, state: ExecutorState) -> str:
+        """
+        SAFETY GATE 2: Check if safety checks passed.
+
+        CRITICAL: If safety fails, execution is BLOCKED.
+        """
+        passed = state.get("safety_checks_passed", False)
+        issues = state.get("safety_issues", [])
+
+        if not passed:
+            logger.warning(
+                "gate_decision",
+                gate="safety_passed",
+                result="safety_failed",
+                issues=issues
+            )
+            return "safety_failed"
+        else:
+            logger.info("gate_decision", gate="safety_passed", result="safety_passed")
+            return "safety_passed"
+
+    def _gate_execution_status(self, state: ExecutorState) -> str:
+        """
+        SAFETY GATE 3: Route based on execution results.
+
+        Determines notification type based on success/failure/skipped counts.
+        """
+        successful = state.get("successful_count", 0)
+        failed = state.get("failed_count", 0)
+        skipped = state.get("skipped_count", 0)
+
+        if failed > 0:
+            logger.info(
+                "gate_decision",
+                gate="execution_status",
+                result="has_failures",
+                failed=failed
+            )
+            return "has_failures"
+        elif successful > 0:
+            logger.info(
+                "gate_decision",
+                gate="execution_status",
+                result="all_success",
+                successful=successful
+            )
+            return "all_success"
+        else:
+            logger.info(
+                "gate_decision",
+                gate="execution_status",
+                result="all_skipped",
+                skipped=skipped
+            )
+            return "all_skipped"
+
+    def _gate_rollback_result(self, state: ExecutorState) -> str:
+        """
+        SAFETY GATE 4: Route based on rollback results.
+
+        Determines if partial recovery was successful.
+        """
+        rollback_results = state.get("rollback_results", [])
+        rollback_failures = [r for r in rollback_results if r.get("status") == "failed"]
+
+        if rollback_failures:
+            logger.warning(
+                "gate_decision",
+                gate="rollback_result",
+                result="rollback_failed",
+                failures=len(rollback_failures)
+            )
+            return "rollback_failed"
+        else:
+            logger.info(
+                "gate_decision",
+                gate="rollback_result",
+                result="rollback_success"
+            )
+            return "rollback_success"
 
     # =========================================================================
     # NODE IMPLEMENTATIONS
@@ -305,13 +477,14 @@ class ActionExecutorGraph(BaseAgentGraph):
         return state
 
     async def execute_actions_node(self, state: ExecutorState) -> ExecutorState:
-        """Execute approved actions via MCP."""
+        """Execute approved actions via MCP.
+
+        NOTE: This node is only reached if safety_check passed (via GATE 2).
+        Safety check is no longer done here - it's a separate gate.
+        """
         try:
-            if not state.get("safety_checks_passed", False):
-                logger.warning("execution_skipped_safety_failed")
-                state["skipped_count"] = len(state.get("actions_to_execute", []))
-                state = self.add_step(state, "execute_actions")
-                return state
+            # Safety check is now handled by GATE 2 before this node
+            # We can assume safety_checks_passed is True here
 
             actions = state.get("actions_to_execute", [])
             dry_run = state.get("dry_run", False)
@@ -607,35 +780,184 @@ class ActionExecutorGraph(BaseAgentGraph):
             "executed_at": datetime.now().isoformat()
         }
 
-    async def notify_node(self, state: ExecutorState) -> ExecutorState:
-        """Send execution notification."""
+    async def log_no_actions_node(self, state: ExecutorState) -> ExecutorState:
+        """
+        Log when no actions to execute.
+
+        Reached via GATE 1 when actions_to_execute is empty.
+        """
         try:
-            successful = state.get("successful_count", 0)
-            failed = state.get("failed_count", 0)
-            skipped = state.get("skipped_count", 0)
-
-            # Only notify if there were actions executed
-            if successful > 0 or failed > 0:
-                await self._send_telegram_notification(state)
-
-            state["notification_sent"] = True
-            state = self.add_step(state, "notify")
-
             logger.info(
-                "notification_complete",
-                success=successful,
-                failed=failed,
-                skipped=skipped
+                "no_actions_to_execute",
+                brand=state.get("brand"),
+                date=state.get("date"),
+                reason="No executable actions found"
             )
 
+            state["notification_sent"] = False
+            state = self.add_step(state, "log_no_actions")
+
         except Exception as e:
-            state["errors"].append(f"Notification failed: {str(e)}")
-            logger.error("notify_error", error=str(e))
+            state["errors"].append(f"Log no actions failed: {str(e)}")
 
         return state
 
-    async def _send_telegram_notification(self, state: ExecutorState) -> bool:
-        """Send execution notification to Telegram."""
+    async def notify_safety_block_node(self, state: ExecutorState) -> ExecutorState:
+        """
+        Send CRITICAL notification when safety check fails.
+
+        Reached via GATE 2 when safety_checks_passed is False.
+        This is a BLOCKING gate - execution is prevented.
+        """
+        try:
+            await self._send_telegram_notification(
+                state,
+                notification_type="safety_block",
+                title="🚫 AKSİYON ENGELLENDİ - GÜVENLİK KONTROLÜ",
+                urgency="Güvenlik sorunları çözülene kadar yürütme engellendi"
+            )
+
+            state["notification_sent"] = True
+            state = self.add_step(state, "notify_safety_block")
+
+            logger.warning(
+                "execution_blocked_by_safety",
+                issues=state.get("safety_issues", [])
+            )
+
+        except Exception as e:
+            state["errors"].append(f"Safety block notification failed: {str(e)}")
+            logger.error("notify_safety_block_error", error=str(e))
+
+        return state
+
+    async def notify_success_node(self, state: ExecutorState) -> ExecutorState:
+        """
+        Send SUCCESS notification when all actions succeed.
+
+        Reached via GATE 3 when all executions are successful.
+        """
+        try:
+            await self._send_telegram_notification(
+                state,
+                notification_type="success",
+                title="✅ AKSİYONLAR BAŞARIYLA TAMAMLANDI",
+                urgency=""
+            )
+
+            state["notification_sent"] = True
+            state = self.add_step(state, "notify_success")
+
+            logger.info(
+                "all_actions_successful",
+                successful=state.get("successful_count", 0),
+                brand=state.get("brand")
+            )
+
+        except Exception as e:
+            state["errors"].append(f"Success notification failed: {str(e)}")
+            logger.error("notify_success_error", error=str(e))
+
+        return state
+
+    async def notify_partial_success_node(self, state: ExecutorState) -> ExecutorState:
+        """
+        Send PARTIAL SUCCESS notification after successful rollback.
+
+        Reached via GATE 4 when rollback succeeds after execution failures.
+        """
+        try:
+            await self._send_telegram_notification(
+                state,
+                notification_type="partial",
+                title="⚠️ KISMİ BAŞARI - ROLLBACK TAMAMLANDI",
+                urgency="Bazı aksiyonlar başarısız oldu, rollback uygulandı"
+            )
+
+            state["notification_sent"] = True
+            state = self.add_step(state, "notify_partial_success")
+
+            logger.info(
+                "partial_success_with_rollback",
+                successful=state.get("successful_count", 0),
+                failed=state.get("failed_count", 0),
+                rollbacks=len(state.get("rollback_results", []))
+            )
+
+        except Exception as e:
+            state["errors"].append(f"Partial success notification failed: {str(e)}")
+            logger.error("notify_partial_success_error", error=str(e))
+
+        return state
+
+    async def notify_failure_node(self, state: ExecutorState) -> ExecutorState:
+        """
+        Send FAILURE notification when execution and rollback fail.
+
+        Reached via GATE 4 when rollback also fails.
+        This is a CRITICAL state requiring immediate attention.
+        """
+        try:
+            await self._send_telegram_notification(
+                state,
+                notification_type="failure",
+                title="🔴 KRİTİK HATA - AKSİYON VE ROLLBACK BAŞARISIZ",
+                urgency="ACİL MÜDAHALE GEREKLİ"
+            )
+
+            state["notification_sent"] = True
+            state = self.add_step(state, "notify_failure")
+
+            logger.critical(
+                "execution_and_rollback_failed",
+                failed=state.get("failed_count", 0),
+                rollback_failures=len([r for r in state.get("rollback_results", []) if r.get("status") == "failed"])
+            )
+
+        except Exception as e:
+            state["errors"].append(f"Failure notification failed: {str(e)}")
+            logger.error("notify_failure_error", error=str(e))
+
+        return state
+
+    async def log_skipped_node(self, state: ExecutorState) -> ExecutorState:
+        """
+        Log when all actions were skipped.
+
+        Reached via GATE 3 when no actions were executed (all skipped).
+        """
+        try:
+            logger.info(
+                "all_actions_skipped",
+                skipped=state.get("skipped_count", 0),
+                brand=state.get("brand"),
+                dry_run=state.get("dry_run", False)
+            )
+
+            state["notification_sent"] = False
+            state = self.add_step(state, "log_skipped")
+
+        except Exception as e:
+            state["errors"].append(f"Log skipped failed: {str(e)}")
+
+        return state
+
+    async def _send_telegram_notification(
+        self,
+        state: ExecutorState,
+        notification_type: str = "info",
+        title: str = "AKSİYON YÜRÜTME RAPORU",
+        urgency: str = ""
+    ) -> bool:
+        """
+        Send execution notification to Telegram.
+
+        Args:
+            state: Current executor state
+            notification_type: "success", "partial", "failure", "safety_block", or "info"
+            title: Notification title with emoji
+            urgency: Urgency message
+        """
         try:
             bot_token = os.getenv("TELEGRAM_BOT_TOKEN_ANALYTICS")
             chat_id = os.getenv("TELEGRAM_CHAT_ID_ANALYTICS")
@@ -648,9 +970,7 @@ class ActionExecutorGraph(BaseAgentGraph):
             skipped = state.get("skipped_count", 0)
             dry_run = state.get("dry_run", False)
 
-            status_icon = "✅" if failed == 0 else "⚠️"
-
-            message = f"""{status_icon} **AKSİYON YÜRÜTME RAPORU**
+            message = f"""{title}
 
 **Marka:** {state['brand']}
 **Tarih:** {state['date']}
@@ -662,20 +982,47 @@ class ActionExecutorGraph(BaseAgentGraph):
 - ⏭️ Atlanan: {skipped}
 
 """
-            # Add failed action details
-            if failed > 0:
-                message += "\n**BAŞARISIZ AKSİYONLAR:**\n"
+
+            # Type-specific content
+            if notification_type == "safety_block":
+                message += "\n🚫 **GÜVENLİK SORUNLARI:**\n"
+                for issue in state.get("safety_issues", [])[:5]:
+                    message += f"• {issue}\n"
+                message += "\n⚠️ Yürütme bu sorunlar çözülene kadar engellendi.\n"
+
+            elif notification_type == "failure":
+                message += "\n🔴 **BAŞARISIZ AKSİYONLAR:**\n"
                 for result in state.get("execution_results", []):
                     if result.get("status") == "failed":
-                        message += f"• {result.get('action_title')}: {result.get('error', 'Unknown')}\n"
+                        message += f"• {result.get('action_title')}\n"
+                        message += f"  └ Hata: {result.get('error', 'Bilinmiyor')}\n"
 
-            # Add safety issues if any
-            if state.get("safety_issues"):
-                message += "\n**GÜVENLİK UYARILARI:**\n"
-                for issue in state["safety_issues"][:3]:
-                    message += f"• {issue}\n"
+                message += "\n⚠️ **BAŞARISIZ ROLLBACK:**\n"
+                for rollback in state.get("rollback_results", []):
+                    if rollback.get("status") == "failed":
+                        message += f"• {rollback.get('action_id')}: Rollback başarısız\n"
 
-            message += f"\n📁 Log: {state.get('execution_log_path', 'N/A')}"
+            elif notification_type == "partial":
+                message += "\n⚠️ **BAŞARISIZ AKSİYONLAR (Rollback uygulandı):**\n"
+                for result in state.get("execution_results", []):
+                    if result.get("status") == "failed":
+                        message += f"• {result.get('action_title')}\n"
+
+                message += "\n✅ **ROLLBACK SONUÇLARI:**\n"
+                for rollback in state.get("rollback_results", []):
+                    status_icon = "✅" if rollback.get("status") == "executed" else "❌"
+                    message += f"• {status_icon} {rollback.get('action_id')}\n"
+
+            elif notification_type == "success":
+                message += "\n✅ **TAMAMLANAN AKSİYONLAR:**\n"
+                for result in state.get("execution_results", [])[:5]:
+                    if result.get("status") == "success":
+                        message += f"• {result.get('action_title')}\n"
+
+            if urgency:
+                message += f"\n⏰ **{urgency}**"
+
+            message += f"\n\n📁 Log: {state.get('execution_log_path', 'N/A')}"
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(
