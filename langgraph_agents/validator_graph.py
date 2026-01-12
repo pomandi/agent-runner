@@ -87,6 +87,8 @@ class ValidationState(TypedDict):
     # Output
     validation_report: Optional[str]
     validation_results: List[Dict[str, Any]]
+    validation_saved: bool
+    validation_save_path: Optional[str]
 
     # Tracking
     steps_completed: Annotated[List[str], operator.add]
@@ -122,6 +124,8 @@ def init_validation_state(
         # Output
         "validation_report": None,
         "validation_results": [],
+        "validation_saved": False,
+        "validation_save_path": None,
         # Tracking
         "steps_completed": [],
         "errors": []
@@ -164,6 +168,9 @@ class DataValidatorGraph(BaseAgentGraph):
         # MCP server directory for Memory-Hub calls
         self._mcp_dir = Path(__file__).parent.parent / "mcp-servers"
 
+        # Output directory for validation results
+        self._output_dir = Path(__file__).parent.parent / "agent_outputs" / "validation_results"
+
     def build_graph(self) -> StateGraph:
         """Build validation graph with CONDITIONAL EDGES.
 
@@ -187,6 +194,7 @@ class DataValidatorGraph(BaseAgentGraph):
         graph.add_node("detect_anomalies", self.detect_anomalies_node)
         graph.add_node("calculate_quality", self.calculate_quality_score_node)
         graph.add_node("generate_report", self.generate_report_node)
+        graph.add_node("save_validation", self.save_validation_node)  # NEW: Save results
 
         # Alert nodes (branching targets)
         graph.add_node("send_critical_alert", self.send_critical_alert_node)
@@ -202,10 +210,11 @@ class DataValidatorGraph(BaseAgentGraph):
         graph.add_edge("cross_source_verify", "detect_anomalies")
         graph.add_edge("detect_anomalies", "calculate_quality")
         graph.add_edge("calculate_quality", "generate_report")
+        graph.add_edge("generate_report", "save_validation")  # NEW: Save before routing
 
         # CONDITIONAL EDGES - Branching is now VISIBLE in graph structure
         graph.add_conditional_edges(
-            "generate_report",
+            "save_validation",  # Changed from generate_report
             self._route_after_validation,
             {
                 "critical": "send_critical_alert",
@@ -628,6 +637,101 @@ class DataValidatorGraph(BaseAgentGraph):
             logger.error("generate_report_error", error=str(e))
 
         return state
+
+    async def save_validation_node(self, state: ValidationState) -> ValidationState:
+        """
+        Save validation results to JSON file and Memory-Hub.
+
+        Saves:
+        - Validation score and decision
+        - Duplicates detected
+        - Anomalies found
+        - Cross-source conflicts
+        - Full validation report
+        """
+        try:
+            self._output_dir.mkdir(parents=True, exist_ok=True)
+
+            # Generate validation ID
+            validation_id = f"validation_{state['brand']}_{state['date']}_{datetime.now().strftime('%H%M%S')}"
+
+            # Build validation document
+            validation_doc = {
+                "validation_id": validation_id,
+                "brand": state["brand"],
+                "date": state["date"],
+                "days": state["days"],
+                "created_at": datetime.now().isoformat(),
+                "validation_score": state["validation_score"],
+                "proceed_to_analysis": state["proceed_to_analysis"],
+                "requires_human_review": state["requires_human_review"],
+                "dedup_stats": state["dedup_stats"],
+                "duplicates": state["duplicates"],
+                "anomalies": state["anomalies"],
+                "cross_source_conflicts": state["cross_source_conflicts"],
+                "data_quality_per_source": state["data_quality_per_source"],
+                "validation_report": state["validation_report"],
+                "errors": state["errors"]
+            }
+
+            # Save to JSON file
+            json_path = self._output_dir / f"{validation_id}.json"
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(validation_doc, f, indent=2, ensure_ascii=False, default=str)
+
+            state["validation_saved"] = True
+            state["validation_save_path"] = str(json_path)
+
+            logger.info("validation_saved", path=str(json_path), score=state["validation_score"])
+            state = self.add_step(state, "save_validation")
+
+            # Also save to Memory-Hub for historical tracking
+            await self._save_to_memory_hub(validation_doc)
+
+        except Exception as e:
+            state["errors"].append(f"Validation save failed: {str(e)}")
+            logger.error("save_validation_error", error=str(e))
+
+        return state
+
+    async def _save_to_memory_hub(self, validation_doc: dict) -> bool:
+        """Save validation results to Memory-Hub."""
+        try:
+            result = await self._call_mcp_tool(
+                "memory-hub",
+                "memory_create",
+                {
+                    "type": "validation_result",
+                    "title": f"Validation - {validation_doc['brand']} - {validation_doc['date']}",
+                    "content": json.dumps({
+                        "score": validation_doc["validation_score"],
+                        "proceed": validation_doc["proceed_to_analysis"],
+                        "anomalies": len(validation_doc["anomalies"]),
+                        "duplicates": validation_doc["dedup_stats"],
+                        "conflicts": len(validation_doc["cross_source_conflicts"])
+                    }, ensure_ascii=False),
+                    "project": validation_doc["brand"],
+                    "tags": [
+                        "validation",
+                        validation_doc["brand"],
+                        validation_doc["date"],
+                        "score:" + str(int(validation_doc["validation_score"] * 100))
+                    ],
+                    "data_source": "validator_graph",
+                    "data_date": validation_doc["date"]
+                }
+            )
+
+            if result.get("error"):
+                logger.warning("memory_hub_validation_save_failed", error=result.get("error"))
+                return False
+
+            logger.info("memory_hub_validation_saved", card_id=result.get("id"))
+            return True
+
+        except Exception as e:
+            logger.warning("memory_hub_validation_save_error", error=str(e))
+            return False
 
     async def send_critical_alert_node(self, state: ValidationState) -> ValidationState:
         """

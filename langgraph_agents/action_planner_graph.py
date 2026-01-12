@@ -874,11 +874,15 @@ KURALLAR:
     # HELPER METHODS
     # =========================================================================
 
-    def _prepare_data_summary(self, validated_data: Dict[str, Dict]) -> str:
+    def _prepare_data_summary(self, validated_data: Dict[str, Any]) -> str:
         """Prepare data summary for LLM."""
         lines = []
 
         for source, data in validated_data.items():
+            # Skip non-dict values (like validation_score which is a float)
+            if not isinstance(data, dict):
+                continue
+
             if not data or data.get("error"):
                 continue
 
