@@ -15,13 +15,23 @@ from pathlib import Path
 from datetime import datetime
 
 # Import Coolify MCP API function for deployment operations
-sys.path.insert(0, "/home/claude/.mcp-servers/coolify")
-try:
-    from server import api_request as coolify_api_request
-    COOLIFY_MCP_AVAILABLE = True
-except ImportError:
-    COOLIFY_MCP_AVAILABLE = False
-    coolify_api_request = None
+# Try multiple paths: container path first, then local dev path
+COOLIFY_MCP_PATHS = [
+    "/app/mcp-servers/coolify",  # Container path
+    "/home/claude/.mcp-servers/coolify",  # Local dev path
+]
+COOLIFY_MCP_AVAILABLE = False
+coolify_api_request = None
+
+for mcp_path in COOLIFY_MCP_PATHS:
+    if mcp_path not in sys.path:
+        sys.path.insert(0, mcp_path)
+    try:
+        from server import api_request as coolify_api_request
+        COOLIFY_MCP_AVAILABLE = True
+        break
+    except ImportError:
+        continue
 
 logger = logging.getLogger(__name__)
 
