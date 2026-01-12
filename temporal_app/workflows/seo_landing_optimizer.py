@@ -48,7 +48,8 @@ class SEOLandingOptimizerWorkflow:
         self,
         mode: str = "generate",
         days: int = 28,
-        skip_deployment: bool = False
+        skip_deployment: bool = False,
+        target_keyword: str = None
     ) -> Dict[str, Any]:
         """
         Execute the SEO landing page optimizer workflow.
@@ -60,16 +61,18 @@ class SEOLandingOptimizerWorkflow:
                 - "report": Generate report only
             days: Number of days of Search Console data
             skip_deployment: Skip Coolify deployment (for testing)
+            target_keyword: Optional specific keyword to generate page for (bypasses opportunity analysis)
 
         Returns:
             Workflow result with status, generated page info, and report
         """
-        workflow.logger.info(f"🚀 Starting SEO Landing Optimizer: mode={mode}, days={days}")
+        workflow.logger.info(f"🚀 Starting SEO Landing Optimizer: mode={mode}, days={days}, target_keyword={target_keyword}")
 
         result = {
             "workflow_id": workflow.info().workflow_id,
             "run_id": workflow.info().run_id,
             "mode": mode,
+            "target_keyword": target_keyword,
             "started_at": workflow.now().isoformat(),
             "success": False,
             "steps_completed": [],
@@ -139,7 +142,7 @@ class SEOLandingOptimizerWorkflow:
             workflow.logger.info("🤖 Step 3: Running SEO optimizer graph...")
             optimizer_result = await workflow.execute_activity(
                 run_seo_optimizer_graph,
-                args=[mode, workflow.now().strftime("%Y-%m-%d"), search_console_data],
+                args=[mode, workflow.now().strftime("%Y-%m-%d"), search_console_data, target_keyword],
                 start_to_close_timeout=timedelta(minutes=10),
                 retry_policy=RetryPolicy(
                     maximum_attempts=2,
