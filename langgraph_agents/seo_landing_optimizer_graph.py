@@ -549,7 +549,7 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
         """
         Node 3: Check existing landing pages.
 
-        Scans config directory for existing pages to avoid duplicates.
+        Scans config directory AND Memory Hub for existing pages to avoid duplicates.
         """
         logger.info("check_existing_pages_start")
 
@@ -557,6 +557,7 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
             existing_pages = []
             existing_keywords = []
 
+            # 1. Check local config directory
             if LANDING_PAGES_CONFIG_PATH.exists():
                 for config_file in LANDING_PAGES_CONFIG_PATH.glob("*.json"):
                     try:
@@ -580,6 +581,15 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
                                     existing_keywords.extend(words)
                     except Exception as e:
                         logger.warning(f"Failed to parse {config_file}: {e}")
+
+            # 2. Check Memory Hub for previously generated keywords
+            try:
+                memory_keywords = await self._get_generated_keywords_from_memory_hub()
+                existing_keywords.extend(memory_keywords)
+                existing_pages.extend([self._generate_slug(k) for k in memory_keywords])
+                logger.info("memory_hub_keywords_loaded", count=len(memory_keywords))
+            except Exception as e:
+                logger.warning("memory_hub_check_failed", error=str(e))
 
             state["existing_pages"] = list(set(existing_pages))
             state["existing_keywords"] = list(set(existing_keywords))
@@ -992,6 +1002,15 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
             state = self.add_step(state, "save_config")
             logger.info("save_config_complete", path=str(file_path))
 
+            # Save keyword to Memory Hub for duplicate detection
+            keyword = state.get("selected_keyword")
+            if keyword:
+                memory_saved = await self._save_keyword_to_memory_hub(keyword, slug, config)
+                if memory_saved:
+                    logger.info("keyword_saved_to_memory_hub", keyword=keyword, slug=slug)
+                else:
+                    logger.warning("keyword_memory_save_failed", keyword=keyword)
+
         except Exception as e:
             state = self.set_error(state, f"Failed to save config: {e}")
             state["config_saved"] = False
@@ -1399,6 +1418,99 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
         """
         logger.info("using_static_hero_images", keyword=keyword)
         return ["/1.png", "/2.png", "/3.png", "/4.png"]
+
+    async def _get_generated_keywords_from_memory_hub(self) -> List[str]:
+        """
+        Fetch previously generated keywords from Memory MCP.
+
+        Uses the agent_context collection to find all SEO landing page
+        keywords that have been generated before.
+
+        Returns:
+            List of keyword strings that have been used for page generation
+        """
+        keywords = []
+
+        try:
+            # Search for SEO landing page records in memory
+            result = await self._call_mcp_tool(
+                "memory-mcp",
+                "search_memory",
+                {
+                    "collection": "agent_context",
+                    "query": "SEO landing page keyword generated",
+                    "top_k": 100,
+                    "filters": {"type": "seo_landing_keyword"}
+                }
+            )
+
+            if "error" in result:
+                logger.warning("memory_search_error", error=result.get("error"))
+                return keywords
+
+            # Extract keywords from results
+            results = result.get("results", result.get("matches", []))
+            for item in results:
+                metadata = item.get("metadata", {})
+                keyword = metadata.get("keyword")
+                if keyword:
+                    keywords.append(keyword.lower())
+
+            logger.info("memory_hub_keywords_fetched", count=len(keywords), keywords=keywords[:10])
+
+        except Exception as e:
+            logger.warning("memory_hub_fetch_failed", error=str(e))
+
+        return keywords
+
+    async def _save_keyword_to_memory_hub(self, keyword: str, slug: str, config: Dict[str, Any]) -> bool:
+        """
+        Save generated keyword to Memory MCP for future duplicate detection.
+
+        Args:
+            keyword: The target keyword used
+            slug: Generated page slug
+            config: Full page config (for reference)
+
+        Returns:
+            True if saved successfully, False otherwise
+        """
+        try:
+            # Prepare content string for semantic search
+            content = f"SEO landing page keyword generated: {keyword}. Page slug: {slug}. Template: {config.get('template', 'unknown')}."
+
+            # Prepare metadata
+            metadata = {
+                "type": "seo_landing_keyword",
+                "keyword": keyword.lower(),
+                "slug": slug,
+                "template": config.get("template", "unknown"),
+                "generated_at": config.get("generated_at", ""),
+                "campaign": config.get("campaign", slug),
+                "seo_title_nl": config.get("seo", {}).get("title", {}).get("nl", "")
+            }
+
+            # Save to memory
+            result = await self._call_mcp_tool(
+                "memory-mcp",
+                "save_to_memory",
+                {
+                    "collection": "agent_context",
+                    "content": content,
+                    "metadata": metadata
+                }
+            )
+
+            if "error" in result:
+                logger.warning("memory_save_error", error=result.get("error"))
+                return False
+
+            logger.info("keyword_saved_to_memory", keyword=keyword, slug=slug)
+            return True
+
+        except Exception as e:
+            logger.warning("memory_hub_save_failed", error=str(e), keyword=keyword)
+            return False
 
     def _generate_sections(self, keyword: str, template: str) -> List[Dict[str, Any]]:
         """Generate page sections based on template."""
