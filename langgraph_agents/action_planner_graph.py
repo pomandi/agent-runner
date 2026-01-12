@@ -902,11 +902,14 @@ KURALLAR:
 
         return "\n".join(lines) if lines else "Veri yok"
 
-    def _prepare_reports_summary(self, analysis_reports: Dict[str, str]) -> str:
+    def _prepare_reports_summary(self, analysis_reports: Dict[str, Any]) -> str:
         """Prepare reports summary for LLM."""
         lines = []
 
         for source, report in analysis_reports.items():
+            # Skip non-string values (like floats, ints, bools)
+            if not isinstance(report, str):
+                continue
             if report:
                 # Truncate long reports
                 truncated = report[:500] + "..." if len(report) > 500 else report

@@ -695,39 +695,22 @@ class DataValidatorGraph(BaseAgentGraph):
         return state
 
     async def _save_to_memory_hub(self, validation_doc: dict) -> bool:
-        """Save validation results to Memory-Hub."""
+        """Save validation results to Memory-Hub.
+
+        Note: Memory-Hub MCP integration is not yet available.
+        This method logs the intent and returns False until MCP is configured.
+        """
         try:
-            result = await self._call_mcp_tool(
-                "memory-hub",
-                "memory_create",
-                {
-                    "type": "validation_result",
-                    "title": f"Validation - {validation_doc['brand']} - {validation_doc['date']}",
-                    "content": json.dumps({
-                        "score": validation_doc["validation_score"],
-                        "proceed": validation_doc["proceed_to_analysis"],
-                        "anomalies": len(validation_doc["anomalies"]),
-                        "duplicates": validation_doc["dedup_stats"],
-                        "conflicts": len(validation_doc["cross_source_conflicts"])
-                    }, ensure_ascii=False),
-                    "project": validation_doc["brand"],
-                    "tags": [
-                        "validation",
-                        validation_doc["brand"],
-                        validation_doc["date"],
-                        "score:" + str(int(validation_doc["validation_score"] * 100))
-                    ],
-                    "data_source": "validator_graph",
-                    "data_date": validation_doc["date"]
-                }
+            # TODO: Integrate with Memory-Hub MCP when available
+            # For now, just log that we would save to Memory-Hub
+            logger.info(
+                "memory_hub_save_skipped",
+                reason="MCP integration not yet configured",
+                brand=validation_doc.get("brand"),
+                date=validation_doc.get("date"),
+                score=validation_doc.get("validation_score")
             )
-
-            if result.get("error"):
-                logger.warning("memory_hub_validation_save_failed", error=result.get("error"))
-                return False
-
-            logger.info("memory_hub_validation_saved", card_id=result.get("id"))
-            return True
+            return False
 
         except Exception as e:
             logger.warning("memory_hub_validation_save_error", error=str(e))
