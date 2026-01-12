@@ -20,6 +20,8 @@ Version: 1.1.0 - Added MCP integration
 import json
 import os
 import re
+import subprocess
+import httpx
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from pathlib import Path
@@ -62,6 +64,9 @@ LANDING_PAGES_CONFIG_PATH = Path(os.getenv(
     "/app/landing-pages/config" if Path("/app").exists() else "/home/claude/projects/sale-v2/pomandi-landing-pages/src/config/pages"
 ))
 COOLIFY_APP_UUID = "dkgksok4g0o04oko88g08s0g"
+COOLIFY_SERVER = "faric"
+COOLIFY_API_URL = os.getenv("COOLIFY_FARIC_URL", "https://coolify2.pomandi.com/api/v1")
+COOLIFY_API_TOKEN = os.getenv("COOLIFY_FARIC_TOKEN", "")
 MIN_IMPRESSIONS_THRESHOLD = 100
 POSITION_OPPORTUNITY_RANGE = (4, 20)
 
@@ -327,6 +332,7 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
         graph.add_node("generate_page_config", self.generate_page_config)
         graph.add_node("validate_config", self.validate_config)
         graph.add_node("save_config", self.save_config)
+        graph.add_node("git_commit_push", self.git_commit_push)
         graph.add_node("trigger_deployment", self.trigger_deployment)
         graph.add_node("generate_report", self.generate_report)
 
@@ -360,7 +366,8 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
             }
         )
 
-        graph.add_edge("save_config", "trigger_deployment")
+        graph.add_edge("save_config", "git_commit_push")
+        graph.add_edge("git_commit_push", "trigger_deployment")
         graph.add_edge("trigger_deployment", "generate_report")
         graph.add_edge("generate_report", END)
 
@@ -380,7 +387,12 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
         - Top pages
         - Position distribution
         """
-        logger.info("fetch_search_console_data_start")
+        # Debug: Log incoming state at graph entry
+        logger.info("fetch_search_console_data_start",
+                   has_selected_keyword=bool(state.get("selected_keyword")),
+                   selected_keyword_value=state.get("selected_keyword"),
+                   mode=state.get("mode"),
+                   state_keys=list(state.keys()))
 
         try:
             days = 28  # Default to 28 days
@@ -587,10 +599,32 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
         Node 4: Select target keyword for today's page.
 
         Picks the highest-potential keyword not already covered.
+        If keyword is already set (via target_keyword param), uses that instead.
         """
-        logger.info("select_target_keyword_start")
+        # Debug: Log incoming state
+        logger.info("select_target_keyword_start",
+                   has_selected_keyword=bool(state.get("selected_keyword")),
+                   selected_keyword_value=state.get("selected_keyword"),
+                   mode=state.get("mode"),
+                   state_keys=list(state.keys()))
 
         try:
+            # Check if keyword was forced via target_keyword parameter
+            if state.get("selected_keyword"):
+                forced_keyword = state["selected_keyword"]
+                logger.info("select_target_keyword_forced", keyword=forced_keyword)
+                state["selected_template"] = self._determine_template(forced_keyword)
+                state["page_strategy"] = {
+                    "keyword": forced_keyword,
+                    "template": state["selected_template"],
+                    "slug": self._generate_slug(forced_keyword),
+                    "target_position": "top 3",
+                    "expected_ctr_improvement": "2-5%",
+                    "forced": True
+                }
+                state = self.add_step(state, "select_target_keyword")
+                return state
+
             existing_keywords_lower = [k.lower() for k in state.get("existing_keywords", [])]
             existing_pages_lower = [p.lower() for p in state.get("existing_pages", [])]
 
@@ -690,34 +724,101 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
                     "en": "Book appointment"
                 })
 
-                # Build sections from LLM content
+                # Build sections in CORRECT ORDER: features → products → stores → faq → cta
+                # IMPORTANT: Each section MUST have: type, id, title (optional), config
                 sections = []
 
-                # Features section from LLM
+                # 1. FEATURES section (from LLM or fallback)
                 if llm_content.get("features"):
                     sections.append({
                         "type": "features",
+                        "id": "features-1",
                         "title": {
                             "nl": "Waarom Pomandi?",
                             "fr": "Pourquoi Pomandi?",
                             "en": "Why Pomandi?"
                         },
-                        "items": llm_content["features"]
+                        "config": {
+                            "items": llm_content["features"]
+                        }
                     })
                 else:
-                    sections.extend(self._generate_sections(keyword, template))
+                    # Fallback features
+                    sections.append({
+                        "type": "features",
+                        "id": "features-1",
+                        "title": {"nl": "Waarom Pomandi?", "fr": "Pourquoi Pomandi?", "en": "Why Pomandi?"},
+                        "config": {
+                            "items": [
+                                {"icon": "scissors", "title": {"nl": "Op Maat", "fr": "Sur Mesure", "en": "Custom Made"}, "description": {"nl": "Elk pak wordt op maat gemaakt.", "fr": "Chaque costume est fait sur mesure.", "en": "Every suit is custom tailored."}},
+                                {"icon": "star", "title": {"nl": "Premium Stoffen", "fr": "Tissus Premium", "en": "Premium Fabrics"}, "description": {"nl": "Alleen de beste stoffen.", "fr": "Seulement les meilleurs tissus.", "en": "Only the finest fabrics."}},
+                                {"icon": "clock", "title": {"nl": "10+ Jaar Ervaring", "fr": "10+ Ans d'Expérience", "en": "10+ Years Experience"}, "description": {"nl": "Vakmanschap sinds 2014.", "fr": "Artisanat depuis 2014.", "en": "Craftsmanship since 2014."}}
+                            ]
+                        }
+                    })
 
-                # FAQ section from LLM
+                # 2. PRODUCTS section (ALWAYS required)
+                sections.append({
+                    "type": "products",
+                    "id": "products-1",
+                    "title": {"nl": "Onze Collectie", "fr": "Notre Collection", "en": "Our Collection"},
+                    "config": {
+                        "collection": self._get_collection_for_keyword(keyword),
+                        "limit": 8,
+                        "style": "grid",
+                        "columns": 4,
+                        "showPrice": True
+                    }
+                })
+
+                # 3. STORES section (ALWAYS required - both locations)
+                sections.append({
+                    "type": "stores",
+                    "id": "stores-1",
+                    "title": {"nl": "Bezoek Onze Showrooms", "fr": "Visitez Nos Showrooms", "en": "Visit Our Showrooms"},
+                    "config": {
+                        "locations": ["brasschaat", "genk"],
+                        "style": "cards",
+                        "showMap": True,
+                        "showHours": True,
+                        "showWhatsApp": True
+                    }
+                })
+
+                # 4. FAQ section (from LLM or fallback)
                 if llm_content.get("faq"):
                     sections.append({
                         "type": "faq",
-                        "title": {
-                            "nl": "Veelgestelde vragen",
-                            "fr": "Questions fréquentes",
-                            "en": "FAQ"
-                        },
-                        "items": llm_content["faq"]
+                        "id": "faq-1",
+                        "title": {"nl": "Veelgestelde vragen", "fr": "Questions fréquentes", "en": "FAQ"},
+                        "config": {
+                            "items": llm_content["faq"]
+                        }
                     })
+                else:
+                    # Fallback FAQ
+                    sections.append({
+                        "type": "faq",
+                        "id": "faq-1",
+                        "title": {"nl": "Veelgestelde vragen", "fr": "Questions fréquentes", "en": "FAQ"},
+                        "config": {
+                            "items": [
+                                {"question": {"nl": "Wat kost een maatpak?", "fr": "Quel est le prix?", "en": "What does it cost?"}, "answer": {"nl": "Onze maatpakken beginnen vanaf €320.", "fr": "Nos costumes commencent à partir de €320.", "en": "Our suits start from €320."}},
+                                {"question": {"nl": "Hoeveel tijd heb ik nodig?", "fr": "Combien de temps?", "en": "How much time?"}, "answer": {"nl": "4-6 weken voor een perfect maatpak.", "fr": "4-6 semaines pour un costume parfait.", "en": "4-6 weeks for a perfect suit."}}
+                            ]
+                        }
+                    })
+
+                # 5. CTA section (ALWAYS required)
+                sections.append({
+                    "type": "cta",
+                    "id": "cta-final",
+                    "config": {
+                        "title": {"nl": "Klaar voor uw perfecte pak?", "fr": "Prêt pour votre costume parfait?", "en": "Ready for your perfect suit?"},
+                        "subtitle": {"nl": "Plan vandaag nog uw gratis consult.", "fr": "Planifiez votre consultation gratuite.", "en": "Schedule your free consultation today."},
+                        "button": {"text": {"nl": "Maak een afspraak", "fr": "Prenez rendez-vous", "en": "Book appointment"}, "style": "solid"}
+                    }
+                })
             else:
                 logger.info("using_template_content", keyword=keyword, reason="LLM unavailable or failed")
                 # Fallback to template-based content
@@ -731,6 +832,20 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
                     "en": "Book appointment"
                 }
                 sections = self._generate_sections(keyword, template)
+
+            # Fetch dynamic product images from Saleor
+            product_images = await self._fetch_product_images_for_keyword(keyword)
+
+            # Get collections for this keyword
+            collections = self._get_collections_for_keyword(keyword)
+            primary_collection = self._get_collection_for_keyword(keyword)
+
+            # Secondary CTA for viewing collection
+            secondary_cta_text = {
+                "nl": "Bekijk collectie",
+                "fr": "Voir collection",
+                "en": "View collection"
+            }
 
             config = {
                 "slug": slug,
@@ -747,18 +862,33 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
                     "description": seo_description,
                     "keywords": self._generate_keywords(keyword),
                     "canonical": f"https://www.pomandi.com/{primary_lang}/{slug}",
-                    "ogImage": "/1.png"
+                    "ogImage": product_images[0] if product_images else "/1.png"
                 },
                 "hero": {
+                    "type": "split",
                     "title": hero_title,
                     "subtitle": hero_subtitle,
-                    "image": "/hero.jpg",
+                    "images": product_images,
                     "cta": {
-                        "text": cta_text,
-                        "link": f"/{primary_lang}/afspraak"
+                        "primary": {
+                            "text": cta_text,
+                            "style": "solid"
+                        },
+                        "secondary": {
+                            "text": secondary_cta_text,
+                            "style": "outline"
+                        }
                     }
                 },
                 "sections": sections,
+                # Top-level fields for template compatibility
+                "collections": collections,
+                "store": {
+                    "locations": ["brasschaat", "genk"],
+                    "showMap": True,
+                    "showHours": True,
+                    "showWhatsApp": True
+                },
                 "campaign": f"seo-{slug}-{datetime.now().strftime('%Y%m')}",
                 "generated_by": "llm" if used_llm else "template",
                 "generated_at": datetime.now().isoformat()
@@ -868,26 +998,113 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
 
         return state
 
+    async def git_commit_push(self, state: SEOLandingOptimizerState) -> SEOLandingOptimizerState:
+        """
+        Node 7.5: Commit and push config to git.
+
+        Commits the new config file and pushes to GitHub.
+        """
+        logger.info("git_commit_push_start")
+
+        if not state.get("config_saved"):
+            logger.info("git_commit_push_skipped", reason="config not saved")
+            return state
+
+        try:
+            config = state.get("generated_config", {})
+            slug = config.get("slug", "unknown")
+            file_path = LANDING_PAGES_CONFIG_PATH / f"{slug}.json"
+
+            # Get the repo directory
+            repo_dir = LANDING_PAGES_CONFIG_PATH.parent.parent.parent  # src/config/pages -> project root
+
+            # Git add
+            add_result = subprocess.run(
+                ["git", "add", str(file_path)],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True
+            )
+            if add_result.returncode != 0:
+                raise Exception(f"git add failed: {add_result.stderr}")
+
+            # Git commit
+            commit_message = f"Add landing page: {slug}\n\nGenerated by SEO Landing Optimizer\nKeyword: {state.get('selected_keyword', 'N/A')}\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+            commit_result = subprocess.run(
+                ["git", "commit", "-m", commit_message],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True
+            )
+            # Commit might fail if no changes (already committed) - that's OK
+            if commit_result.returncode != 0 and "nothing to commit" not in commit_result.stdout:
+                logger.warning("git_commit_warning", stderr=commit_result.stderr)
+
+            # Git push
+            push_result = subprocess.run(
+                ["git", "push", "origin", "main"],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True
+            )
+            if push_result.returncode != 0:
+                raise Exception(f"git push failed: {push_result.stderr}")
+
+            state["git_pushed"] = True
+            state = self.add_step(state, "git_commit_push")
+            logger.info("git_commit_push_complete", slug=slug)
+
+        except Exception as e:
+            logger.error("git_commit_push_failed", error=str(e))
+            state["git_pushed"] = False
+            # Don't set error - deployment can still be attempted manually
+
+        return state
+
     async def trigger_deployment(self, state: SEOLandingOptimizerState) -> SEOLandingOptimizerState:
         """
         Node 8: Trigger Coolify deployment.
 
-        Calls Coolify MCP to deploy the landing pages app.
+        Calls Coolify API to deploy the landing pages app.
         """
         logger.info("trigger_deployment_start")
 
-        try:
-            # In real implementation, this would use MCP:
-            # mcp__coolify__restart_application(uuid=COOLIFY_APP_UUID)
+        if not state.get("git_pushed"):
+            logger.info("trigger_deployment_skipped", reason="git not pushed")
+            state["deployment_triggered"] = False
+            return state
 
-            state["deployment_triggered"] = True
-            state["deployment_uuid"] = COOLIFY_APP_UUID
-            state["deployment_status"] = "pending"
+        try:
+            # Call Coolify API directly
+            headers = {
+                "Authorization": f"Bearer {COOLIFY_API_TOKEN}",
+                "Content-Type": "application/json"
+            }
+
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{COOLIFY_API_URL}/applications/{COOLIFY_APP_UUID}/deploy",
+                    headers=headers,
+                    json={"force_rebuild": False},
+                    timeout=30.0
+                )
+
+                if response.status_code in [200, 201]:
+                    result = response.json()
+                    deployment_uuid = result.get("deployments", [{}])[0].get("deployment_uuid", "")
+                    state["deployment_triggered"] = True
+                    state["deployment_uuid"] = deployment_uuid
+                    state["deployment_status"] = "queued"
+                    logger.info("trigger_deployment_complete",
+                               app_uuid=COOLIFY_APP_UUID,
+                               deployment_uuid=deployment_uuid)
+                else:
+                    raise Exception(f"Coolify API returned {response.status_code}: {response.text}")
 
             state = self.add_step(state, "trigger_deployment")
-            logger.info("trigger_deployment_complete", uuid=COOLIFY_APP_UUID)
 
         except Exception as e:
+            logger.error("trigger_deployment_failed", error=str(e))
             state = self.set_error(state, f"Failed to trigger deployment: {e}")
             state["deployment_triggered"] = False
 
@@ -927,7 +1144,10 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
             if config:
                 report_lines.append(f"- **Generated Page:** {config.get('slug')}")
                 report_lines.append(f"- **Config Saved:** {'Yes' if state.get('config_saved') else 'No'}")
+                report_lines.append(f"- **Git Pushed:** {'Yes' if state.get('git_pushed') else 'No'}")
                 report_lines.append(f"- **Deployment Triggered:** {'Yes' if state.get('deployment_triggered') else 'No'}")
+                if state.get("deployment_uuid"):
+                    report_lines.append(f"- **Deployment UUID:** {state.get('deployment_uuid')}")
 
             # Top opportunities
             if opportunities[:5]:
@@ -1103,102 +1323,204 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
 
         return list(set(base_keywords))[:10]
 
+    def _get_collection_for_keyword(self, keyword: str) -> str:
+        """
+        Get primary Saleor collection slug for a keyword.
+
+        Valid collections in Saleor (as of Jan 2026):
+        - All-Suits: general suits (includes wedding suits)
+        - blue-suit, black-suit, beige-suit, burgundy-suit, green-suit
+        - gray-wedding-suit: specific wedding suits
+        - tuxedo, shoes, belts
+
+        NOTE: "Wedding-Suits" collection does NOT exist in Saleor!
+        Wedding-related pages should use "All-Suits" or "gray-wedding-suit".
+        """
+        keyword_lower = keyword.lower()
+
+        # Wedding-related keywords -> use All-Suits (Wedding-Suits doesn't exist in Saleor)
+        if any(w in keyword_lower for w in ["trouw", "wedding", "mariage", "bruiloft", "huwelijk", "bruidegom"]):
+            return "All-Suits"  # Changed from Wedding-Suits which doesn't exist
+
+        # Business/corporate keywords
+        if any(w in keyword_lower for w in ["zaken", "business", "affaires", "kantoor", "bureau"]):
+            return "All-Suits"
+
+        # Color-specific - use lowercase Saleor slugs
+        if any(w in keyword_lower for w in ["blauw", "blue", "bleu"]):
+            return "blue-suit"
+        if any(w in keyword_lower for w in ["zwart", "black", "noir"]):
+            return "black-suit"
+        if any(w in keyword_lower for w in ["beige", "zand", "sand"]):
+            return "beige-suit"
+
+        # Default
+        return "All-Suits"
+
+    def _get_collections_for_keyword(self, keyword: str) -> List[str]:
+        """
+        Get all relevant Saleor collection slugs for a keyword.
+        Returns primary collection plus related collections.
+
+        Valid Saleor collections (lowercase slugs):
+        - All-Suits (the only PascalCase one)
+        - blue-suit, black-suit, beige-suit, burgundy-suit, green-suit
+        - gray-wedding-suit, tuxedo, shoes, belts
+        """
+        primary = self._get_collection_for_keyword(keyword)
+
+        # All suits (including wedding) - just return All-Suits
+        if primary == "All-Suits":
+            return ["All-Suits"]
+        elif primary == "blue-suit":
+            return ["blue-suit", "All-Suits"]
+        elif primary == "black-suit":
+            return ["black-suit", "All-Suits"]
+        elif primary == "beige-suit":
+            return ["beige-suit", "All-Suits"]
+        else:
+            return ["All-Suits"]
+
+    async def _fetch_product_images_for_keyword(self, keyword: str) -> List[str]:
+        """
+        Return verified hero images for landing pages.
+
+        IMPORTANT: We use static hero images (/1.png to /4.png) that are verified
+        to show actual suits. Dynamic R2/Saleor image fetching was disabled because:
+        1. API might return non-suit products (dishes, accessories, etc.)
+        2. Product images may not be optimized for hero display
+        3. Static images are curated and high-quality
+
+        The static images are:
+        - /1.png, /2.png, /3.png, /4.png - Verified wedding/business suit photos
+
+        For product display, the products section uses Saleor collections which
+        shows the correct products dynamically.
+        """
+        logger.info("using_static_hero_images", keyword=keyword)
+        return ["/1.png", "/2.png", "/3.png", "/4.png"]
+
     def _generate_sections(self, keyword: str, template: str) -> List[Dict[str, Any]]:
         """Generate page sections based on template."""
         sections = []
 
-        # Features section (always)
+        # Get appropriate collection for this keyword
+        collection_slug = self._get_collection_for_keyword(keyword)
+
+        # Features section (always first)
         sections.append({
             "type": "features",
+            "id": "features-1",
             "title": {
                 "nl": "Waarom Pomandi?",
                 "fr": "Pourquoi Pomandi?",
                 "en": "Why Pomandi?"
             },
-            "items": [
-                {
-                    "icon": "scissors",
-                    "title": {"nl": "Op Maat", "fr": "Sur Mesure", "en": "Custom Made"},
-                    "description": {"nl": "Elk pak wordt op maat gemaakt", "fr": "Chaque costume est fait sur mesure", "en": "Every suit is custom tailored"}
-                },
-                {
-                    "icon": "star",
-                    "title": {"nl": "Premium Stoffen", "fr": "Tissus Premium", "en": "Premium Fabrics"},
-                    "description": {"nl": "Alleen de beste stoffen", "fr": "Seulement les meilleurs tissus", "en": "Only the finest fabrics"}
-                },
-                {
-                    "icon": "clock",
-                    "title": {"nl": "10+ Jaar Ervaring", "fr": "10+ Ans d'Expérience", "en": "10+ Years Experience"},
-                    "description": {"nl": "Vakmanschap sinds 2014", "fr": "Artisanat depuis 2014", "en": "Craftsmanship since 2014"}
-                }
-            ]
+            "config": {
+                "items": [
+                    {
+                        "icon": "scissors",
+                        "title": {"nl": "Op Maat", "fr": "Sur Mesure", "en": "Custom Made"},
+                        "description": {"nl": "Elk pak wordt op maat gemaakt voor jouw lichaam en stijl.", "fr": "Chaque costume est fait sur mesure pour votre corps et style.", "en": "Every suit is custom tailored for your body and style."}
+                    },
+                    {
+                        "icon": "star",
+                        "title": {"nl": "Premium Stoffen", "fr": "Tissus Premium", "en": "Premium Fabrics"},
+                        "description": {"nl": "Alleen de beste stoffen van gerenommeerde leveranciers.", "fr": "Seulement les meilleurs tissus de fournisseurs renommés.", "en": "Only the finest fabrics from renowned suppliers."}
+                    },
+                    {
+                        "icon": "clock",
+                        "title": {"nl": "10+ Jaar Ervaring", "fr": "10+ Ans d'Expérience", "en": "10+ Years Experience"},
+                        "description": {"nl": "Vakmanschap en expertise sinds 2014.", "fr": "Artisanat et expertise depuis 2014.", "en": "Craftsmanship and expertise since 2014."}
+                    }
+                ]
+            }
         })
 
-        # Products section
+        # Products section with proper config (ALWAYS included)
         sections.append({
             "type": "products",
+            "id": "products-1",
             "title": {
                 "nl": "Onze Collectie",
                 "fr": "Notre Collection",
                 "en": "Our Collection"
             },
-            "collections": ["maatpak-collectie"]
+            "config": {
+                "collection": collection_slug,
+                "limit": 8,
+                "style": "grid",
+                "columns": 4,
+                "showPrice": True
+            }
         })
 
-        # Testimonials
+        # Stores section with proper config (ALWAYS included - both locations)
         sections.append({
-            "type": "testimonials",
+            "type": "stores",
+            "id": "stores-1",
             "title": {
-                "nl": "Wat Klanten Zeggen",
-                "fr": "Ce Que Disent Nos Clients",
-                "en": "What Customers Say"
+                "nl": "Bezoek Ons",
+                "fr": "Visitez-Nous",
+                "en": "Visit Us"
+            },
+            "config": {
+                "locations": ["brasschaat", "genk"],
+                "style": "cards",
+                "showMap": True,
+                "showHours": True,
+                "showWhatsApp": True
             }
         })
 
         # FAQ section
         sections.append({
             "type": "faq",
+            "id": "faq-1",
             "title": {
                 "nl": "Veelgestelde Vragen",
                 "fr": "Questions Fréquentes",
                 "en": "FAQ"
             },
-            "items": [
-                {
-                    "question": {"nl": "Hoe werkt een maatpak?", "fr": "Comment fonctionne le sur-mesure?", "en": "How does custom tailoring work?"},
-                    "answer": {"nl": "We nemen 25+ maten en maken het pak speciaal voor jou.", "fr": "Nous prenons 25+ mesures et faisons le costume spécialement pour vous.", "en": "We take 25+ measurements and create the suit specifically for you."}
-                },
-                {
-                    "question": {"nl": "Wat kost een maatpak?", "fr": "Quel est le prix d'un costume?", "en": "What does a custom suit cost?"},
-                    "answer": {"nl": "Onze maatpakken beginnen vanaf €320.", "fr": "Nos costumes sur mesure commencent à partir de €320.", "en": "Our custom suits start from €320."}
-                }
-            ]
+            "config": {
+                "items": [
+                    {
+                        "question": {"nl": "Hoe werkt een maatpak?", "fr": "Comment fonctionne le sur-mesure?", "en": "How does custom tailoring work?"},
+                        "answer": {"nl": "We nemen 25+ maten en maken het pak speciaal voor jou. Dit zorgt voor een perfecte pasvorm die je nergens anders vindt.", "fr": "Nous prenons 25+ mesures et faisons le costume spécialement pour vous. Cela garantit un ajustement parfait.", "en": "We take 25+ measurements and create the suit specifically for you. This ensures a perfect fit you won't find elsewhere."}
+                    },
+                    {
+                        "question": {"nl": "Wat kost een maatpak?", "fr": "Quel est le prix d'un costume?", "en": "What does a custom suit cost?"},
+                        "answer": {"nl": "Onze maatpakken beginnen vanaf €320. De prijs varieert afhankelijk van stof en afwerking.", "fr": "Nos costumes sur mesure commencent à partir de €320. Le prix varie selon le tissu et les finitions.", "en": "Our custom suits start from €320. Price varies depending on fabric and finishing."}
+                    },
+                    {
+                        "question": {"nl": "Hoeveel tijd heb ik nodig?", "fr": "Combien de temps faut-il?", "en": "How much time do I need?"},
+                        "answer": {"nl": "Voor een perfect maatpak adviseren we 4-6 weken. Spoedopdrachten zijn mogelijk na overleg.", "fr": "Pour un costume parfait, nous conseillons 4-6 semaines. Les commandes urgentes sont possibles après consultation.", "en": "For a perfect custom suit, we advise 4-6 weeks. Rush orders are possible upon consultation."}
+                    }
+                ]
+            }
         })
 
         # CTA section
         sections.append({
             "type": "cta",
-            "title": {
-                "nl": "Klaar voor jouw perfecte pak?",
-                "fr": "Prêt pour votre costume parfait?",
-                "en": "Ready for your perfect suit?"
-            },
-            "button": {
-                "text": {"nl": "Maak een afspraak", "fr": "Prenez rendez-vous", "en": "Book appointment"},
-                "link": "/nl/afspraak"
+            "id": "cta-final",
+            "config": {
+                "title": {
+                    "nl": "Klaar voor jouw perfecte pak?",
+                    "fr": "Prêt pour votre costume parfait?",
+                    "en": "Ready for your perfect suit?"
+                },
+                "subtitle": {
+                    "nl": "Plan vandaag nog je gratis consult bij Pomandi.",
+                    "fr": "Planifiez dès aujourd'hui votre consultation gratuite chez Pomandi.",
+                    "en": "Schedule your free consultation at Pomandi today."
+                },
+                "button": {
+                    "text": {"nl": "Maak een afspraak", "fr": "Prenez rendez-vous", "en": "Book appointment"},
+                    "style": "solid"
+                }
             }
         })
-
-        # Add store section for location template
-        if template == "location":
-            sections.insert(3, {
-                "type": "stores",
-                "title": {
-                    "nl": "Onze Winkels",
-                    "fr": "Nos Magasins",
-                    "en": "Our Stores"
-                }
-            })
 
         return sections
 
