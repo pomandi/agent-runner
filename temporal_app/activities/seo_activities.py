@@ -8,10 +8,20 @@ from temporalio import activity
 from typing import Dict, Any, List, Optional
 import logging
 import os
+import sys
 import time
 import json
 from pathlib import Path
 from datetime import datetime
+
+# Import Coolify MCP API function for deployment operations
+sys.path.insert(0, "/home/claude/.mcp-servers/coolify")
+try:
+    from server import api_request as coolify_api_request
+    COOLIFY_MCP_AVAILABLE = True
+except ImportError:
+    COOLIFY_MCP_AVAILABLE = False
+    coolify_api_request = None
 
 logger = logging.getLogger(__name__)
 
@@ -528,7 +538,9 @@ LANDING_PAGES_APP_UUID = os.getenv("LANDING_PAGES_APP_UUID", "dkgksok4g0o04oko88
 @activity.defn
 async def trigger_coolify_deployment(skip: bool = False) -> Dict[str, Any]:
     """
-    Trigger Coolify deployment for landing pages app via HTTP API.
+    Trigger Coolify deployment for landing pages app via Coolify MCP API.
+
+    Uses the Coolify MCP server's api_request function for reliable deployment.
 
     Args:
         skip: If True, skip deployment (for testing)
@@ -536,8 +548,6 @@ async def trigger_coolify_deployment(skip: bool = False) -> Dict[str, Any]:
     Returns:
         Deployment result with status
     """
-    import httpx
-
     if skip:
         activity.logger.info("Skipping Coolify deployment (skip=True)")
         return {
@@ -546,52 +556,51 @@ async def trigger_coolify_deployment(skip: bool = False) -> Dict[str, Any]:
             "message": "Deployment skipped as requested"
         }
 
-    activity.logger.info(f"Triggering Coolify deployment: {LANDING_PAGES_APP_UUID}")
+    activity.logger.info(f"Triggering Coolify deployment via MCP: {LANDING_PAGES_APP_UUID}")
+
+    # Check if Coolify MCP is available
+    if not COOLIFY_MCP_AVAILABLE or coolify_api_request is None:
+        activity.logger.error("Coolify MCP not available, falling back to direct HTTP")
+        return {
+            "success": False,
+            "error": "Coolify MCP not available - check /home/claude/.mcp-servers/coolify/server.py"
+        }
 
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                f"{COOLIFY_URL}/api/v1/applications/{LANDING_PAGES_APP_UUID}/restart",
-                headers={
-                    "Authorization": f"Bearer {COOLIFY_TOKEN}",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json"
-                }
-            )
+        # Use Coolify MCP API function
+        result = coolify_api_request(
+            method="POST",
+            endpoint=f"/applications/{LANDING_PAGES_APP_UUID}/restart",
+            server="faric"  # Use faric server (46.224.117.155)
+        )
 
-            if response.status_code >= 400:
-                return {
-                    "success": False,
-                    "status_code": response.status_code,
-                    "error": response.text[:500]
-                }
-
-            result = {
-                "success": True,
+        # Check for errors in response
+        if result.get("error"):
+            activity.logger.error(f"Coolify deployment failed: {result}")
+            return {
+                "success": False,
                 "uuid": LANDING_PAGES_APP_UUID,
-                "status": "deployment_triggered",
-                "status_code": response.status_code,
+                "status": "failed",
+                "error": result.get("message", str(result)),
+                "status_code": result.get("status_code"),
                 "triggered_at": datetime.now().isoformat()
             }
 
-            # Try to parse response
-            try:
-                result["response"] = response.json()
-            except:
-                result["response_text"] = response.text[:200]
-
-            activity.logger.info(f"Coolify deployment triggered: {LANDING_PAGES_APP_UUID}")
-            return result
-
-    except httpx.TimeoutException:
+        activity.logger.info(f"Coolify deployment triggered successfully: {LANDING_PAGES_APP_UUID}")
         return {
-            "success": False,
-            "error": "Coolify API request timed out"
+            "success": True,
+            "uuid": LANDING_PAGES_APP_UUID,
+            "status": "deployment_triggered",
+            "status_code": result.get("status_code", 200),
+            "response": result,
+            "triggered_at": datetime.now().isoformat()
         }
+
     except Exception as e:
-        activity.logger.error(f"Failed to trigger deployment: {e}")
+        activity.logger.error(f"Failed to trigger deployment via MCP: {e}")
         return {
             "success": False,
+            "uuid": LANDING_PAGES_APP_UUID,
             "error": str(e)
         }
 
@@ -648,35 +657,64 @@ async def save_seo_report(
 @activity.defn
 async def check_deployment_status(deployment_uuid: str) -> Dict[str, Any]:
     """
-    Check Coolify deployment status.
+    Check Coolify deployment status via Coolify MCP API.
 
     Args:
-        deployment_uuid: Deployment UUID
+        deployment_uuid: Application UUID to check
 
     Returns:
-        Deployment status
+        Deployment status with details
     """
-    activity.logger.info(f"Checking deployment status: {deployment_uuid}")
+    activity.logger.info(f"Checking deployment status via MCP: {deployment_uuid}")
 
-    try:
-        # In production, this would use Coolify MCP:
-        # mcp__coolify__get_application(uuid=deployment_uuid, server="faric")
-
-        result = {
+    # Check if Coolify MCP is available
+    if not COOLIFY_MCP_AVAILABLE or coolify_api_request is None:
+        activity.logger.warning("Coolify MCP not available for status check")
+        return {
             "uuid": deployment_uuid,
-            "status": "running",  # "running", "building", "stopped", "failed"
+            "status": "unknown",
+            "error": "Coolify MCP not available",
             "checked_at": datetime.now().isoformat()
         }
 
-        activity.logger.info(f"Deployment status: {result['status']}")
-        return result
+    try:
+        # Use Coolify MCP API to get application status
+        result = coolify_api_request(
+            method="GET",
+            endpoint=f"/applications/{deployment_uuid}",
+            server="faric"
+        )
+
+        # Check for errors
+        if result.get("error"):
+            activity.logger.error(f"Failed to get deployment status: {result}")
+            return {
+                "uuid": deployment_uuid,
+                "status": "error",
+                "error": result.get("message", str(result)),
+                "checked_at": datetime.now().isoformat()
+            }
+
+        # Extract status from application data
+        app_status = result.get("status", "unknown")
+
+        activity.logger.info(f"Deployment status: {app_status}")
+        return {
+            "uuid": deployment_uuid,
+            "status": app_status,
+            "is_running": app_status == "running",
+            "name": result.get("name"),
+            "fqdn": result.get("fqdn"),
+            "checked_at": datetime.now().isoformat()
+        }
 
     except Exception as e:
         activity.logger.error(f"Failed to check deployment status: {e}")
         return {
             "uuid": deployment_uuid,
             "status": "unknown",
-            "error": str(e)
+            "error": str(e),
+            "checked_at": datetime.now().isoformat()
         }
 
 
