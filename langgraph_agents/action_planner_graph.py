@@ -397,11 +397,18 @@ class ActionPlannerGraph(BaseAgentGraph):
                 "critical_alert_immediate": True
             }
 
+            # Count sources safely (validated_data might be validation result, not source data)
+            validated_data = state.get("validated_data", {})
+            sources_count = len(validated_data) if isinstance(validated_data, dict) else 0
+
+            analysis_reports = state.get("analysis_reports", {})
+            reports_count = len(analysis_reports) if isinstance(analysis_reports, dict) else 0
+
             logger.info(
                 "context_loaded",
                 brand=state["brand"],
-                sources_count=len(state["validated_data"]),
-                reports_count=len(state["analysis_reports"])
+                sources_count=sources_count,
+                reports_count=reports_count
             )
 
             state = self.add_step(state, "load_context")
@@ -1018,26 +1025,33 @@ KURALLAR:
 
     async def plan_actions(
         self,
-        validated_data: Dict[str, Dict[str, Any]],
-        analysis_reports: Dict[str, str] = None,
+        validated_data: Dict[str, Any],
+        analysis_reports: Dict[str, Any] = None,
         brand: str = "pomandi",
         date: str = None,
-        validation_score: float = 1.0
+        validation_score: float = None
     ) -> Dict[str, Any]:
         """
         Generate action plan based on validated data.
 
         Args:
-            validated_data: Dictionary of validated source data
-            analysis_reports: Dictionary of analysis reports per source
+            validated_data: Validation result or dictionary of source data
+                Can be either:
+                - Full validation result with validation_score, anomalies, etc.
+                - Dictionary of source data {source_name: source_data}
+            analysis_reports: Analysis reports (can be analytics result)
             brand: Brand name
             date: Date string
-            validation_score: Data quality score
+            validation_score: Data quality score (extracted from validated_data if not provided)
 
         Returns:
             Action plan result with actions categorized by automation level
         """
         try:
+            # Extract validation_score from validated_data if it's a validation result
+            if validation_score is None:
+                validation_score = validated_data.get("validation_score", 1.0) if isinstance(validated_data, dict) else 1.0
+
             # Initialize state
             initial_state = init_action_planner_state(
                 brand=brand,
