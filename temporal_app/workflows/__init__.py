@@ -8,6 +8,7 @@ Workflows:
     - FeedPublisherWorkflow: Social media feed publishing
     - FeedPublisherLangGraphWorkflow: LangGraph-based publishing
     - InvoiceMatcherLangGraphWorkflow: Invoice matching
+    - MemoryHubTestWorkflow: Simple Memory-Hub connectivity test
 """
 
 from .feed_publisher import FeedPublisherWorkflow
@@ -19,6 +20,7 @@ from .daily_analytics import (
     FeedbackCollectionWorkflow
 )
 from .appointment_collector import *
+from .memory_hub_test import MemoryHubTestWorkflow
 
 __all__ = [
     # Core Analytics Pipeline
@@ -30,4 +32,6 @@ __all__ = [
     "FeedPublisherLangGraphWorkflow",
     # Other
     "InvoiceMatcherLangGraphWorkflow",
+    # Test
+    "MemoryHubTestWorkflow",
 ]

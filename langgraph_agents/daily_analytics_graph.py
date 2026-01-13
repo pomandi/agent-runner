@@ -49,6 +49,7 @@ AGENT_OUTPUTS_DIR = Path(__file__).parent.parent / "agent_outputs" / "daily_anal
 from .base_graph import BaseAgentGraph
 from .state_schemas import DailyAnalyticsState, init_daily_analytics_state
 from memory.memory_hub_client import save_to_memory_hub
+from .clients.agent_outputs_client import save_to_agent_outputs
 from .error_handling import (
     fetch_with_smart_retry,
     ErrorAggregator,
@@ -1637,52 +1638,47 @@ KURALLAR:
                 size_bytes=json_path.stat().st_size
             )
 
-            # === 2. Save to Qdrant (Vector DB) ===
+            # === 2. Calculate quality metrics ===
             aggregated = data_to_save.get("aggregated_metrics", {})
             quality = data_to_save.get("quality", {})
             sources_success = quality.get("sources_success", 0)
             sources_total = sources_success + quality.get("sources_error", 0)
             quality_score = sources_success / max(1, sources_total)
 
-            summary_text = f"""
-Daily Analytics Summary for {brand} on {today}
-Period: Last {days} days
-Total Ad Spend: €{aggregated.get('total_ad_spend', 0):.2f}
-Total Revenue: €{aggregated.get('total_revenue', 0):.2f}
-ROAS: {aggregated.get('roas', 0):.2f}
-Total Orders: {aggregated.get('total_orders', 0)}
-Total Sessions: {aggregated.get('total_sessions', 0)}
-CPA: €{aggregated.get('cpa', 0):.2f}
-AOV: €{aggregated.get('aov', 0):.2f}
-Quality: {sources_success}/{sources_total} sources successful ({quality_score:.0%})
-Insights: {state.get('report_markdown', 'No summary')[:500]}
-"""
+            # === 3. Save to Qdrant (Vector DB) - DISABLED ===
+            # TODO: Re-enable after Qdrant infrastructure is fixed
+            state["qdrant_saved"] = False
+            state["qdrant_doc_id"] = None
+            logger.debug("qdrant_save_disabled", reason="Qdrant infrastructure needs setup")
 
-            qdrant_metadata = {
-                "brand": brand,
-                "date": today,
-                "total_spend": float(aggregated.get("total_ad_spend", 0)),
-                "total_revenue": float(aggregated.get("total_revenue", 0)),
-                "roas": float(aggregated.get("roas", 0)),
-                "quality_score": float(quality_score),
-                "sources_count": int(sources_success),
-                "data_hash": data_hash,
-                "summary": state.get('report_markdown', '')[:500],
-                "created_at": timestamp
-            }
-
-            try:
-                qdrant_doc_id = await self.save_to_memory("analytics_data", summary_text, qdrant_metadata)
-                state["qdrant_saved"] = True
-                state["qdrant_doc_id"] = qdrant_doc_id
-                logger.info("qdrant_save_success", doc_id=qdrant_doc_id, collection="analytics_data")
-            except Exception as e:
-                logger.warning("qdrant_save_failed", error=str(e))
-                state["qdrant_saved"] = False
-                state["qdrant_doc_id"] = None
-
-            # === 3. Save to Memory-Hub (if available) ===
+            # === 4. Save to Memory-Hub ===
             memory_hub_saved = await self._save_to_memory_hub(data_to_save)
+
+            # === 5. Save to Agent-Outputs Database ===
+            try:
+                agent_outputs_saved = await save_to_agent_outputs(
+                    agent_name="daily-analytics",
+                    output_type="report",
+                    title=f"Daily Analytics - {brand} - {today}",
+                    content=json.dumps(data_to_save, default=str),
+                    tags=[brand, "daily-analytics", today],
+                    metadata={
+                        "brand": brand,
+                        "date": today,
+                        "period_days": days,
+                        "quality_score": quality_score,
+                        "data_hash": data_hash,
+                        "aggregated_metrics": aggregated
+                    }
+                )
+                state["agent_outputs_saved"] = agent_outputs_saved
+                if agent_outputs_saved:
+                    logger.info("agent_outputs_save_success", brand=brand, date=today)
+                else:
+                    logger.error("agent_outputs_save_failed", brand=brand, date=today)
+            except Exception as e:
+                logger.error("agent_outputs_save_error", error=str(e))
+                state["agent_outputs_saved"] = False
 
             # Update state with save status
             state["data_saved"] = True
@@ -1811,12 +1807,12 @@ Insights: {state.get('report_markdown', 'No summary')[:500]}
             if success:
                 logger.info("memory_hub_saved", brand=brand, date=date)
             else:
-                logger.warning("memory_hub_save_failed", brand=brand, date=date)
+                logger.error("memory_hub_save_failed", brand=brand, date=date)
 
             return success
 
         except Exception as e:
-            logger.warning("memory_hub_save_error", error=str(e))
+            logger.error("memory_hub_save_error", error=str(e))
             return False
 
     # =========================================================================
@@ -2206,6 +2202,25 @@ Kisa ve oz yaz. Gereksiz detay verme."""
                 state["errors"].append("No report to send")
                 return state
 
+            # Add storage status section to the report
+            json_saved = state.get("data_saved", False)
+            memory_hub_saved = state.get("memory_hub_saved", False)
+            agent_outputs_saved = state.get("agent_outputs_saved", False)
+
+            storage_section = f"""
+
+---
+*Veri Kayit Durumu:*
+- JSON: {'OK' if json_saved else 'HATA'}
+- Memory-Hub: {'OK' if memory_hub_saved else 'HATA'}
+- Agent-Outputs: {'OK' if agent_outputs_saved else 'HATA'}"""
+
+            # Check if ALL storage failed - add warning
+            if not any([json_saved, memory_hub_saved, agent_outputs_saved]):
+                storage_section += "\n\n*UYARI: Veri hicbir yere kaydedilemedi!*"
+
+            report = report + storage_section
+
             # Get Telegram config (separate from email bot)
             bot_token = os.getenv("TELEGRAM_BOT_TOKEN_ANALYTICS")
             chat_id = os.getenv("TELEGRAM_CHAT_ID_ANALYTICS")
@@ -2345,9 +2360,24 @@ Kisa ve oz yaz. Gereksiz detay verme."""
             # Run graph
             final_state = await self.run(**initial_state)
 
+            # Calculate storage success (at least one storage must succeed)
+            storage_status = {
+                "json_saved": final_state.get("data_saved", False),
+                "memory_hub_saved": final_state.get("memory_hub_saved", False),
+                "agent_outputs_saved": final_state.get("agent_outputs_saved", False),
+                "qdrant_saved": final_state.get("qdrant_saved", False)  # Disabled
+            }
+
+            # Success requires data collection AND at least one storage
+            storage_success = any([
+                storage_status["json_saved"],
+                storage_status["memory_hub_saved"],
+                storage_status["agent_outputs_saved"]
+            ])
+
             # Build result
             result = {
-                "success": True,
+                "success": storage_success,  # Based on actual storage, not hardcoded
                 "brand": brand,
                 "period_days": days,
                 "report_markdown": final_state.get("report_markdown", ""),
@@ -2356,10 +2386,21 @@ Kisa ve oz yaz. Gereksiz detay verme."""
                 "quality_score": final_state.get("quality_score", 0.0),
                 "telegram_sent": final_state.get("telegram_sent", False),
                 "telegram_message_id": final_state.get("telegram_message_id"),
+                "storage_status": storage_status,  # NEW: Track all storage systems
                 "errors": final_state.get("errors", []),
                 "steps_completed": final_state.get("steps_completed", []),
                 "regenerate_attempts": self.regenerate_count
             }
+
+            # Log storage status for observability
+            logger.info(
+                "storage_status",
+                brand=brand,
+                json_saved=storage_status["json_saved"],
+                memory_hub_saved=storage_status["memory_hub_saved"],
+                agent_outputs_saved=storage_status["agent_outputs_saved"],
+                overall_success=storage_success
+            )
 
             # Record metrics
             if METRICS_AVAILABLE:

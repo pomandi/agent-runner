@@ -296,10 +296,13 @@ class DailyAnalyticsState(TypedDict):
     quality_score: float                         # Rapor kalite skoru 0-1
 
     # Data Persistence (NEW - Faz 1)
-    data_saved: bool                             # Veri kaydedildi mi
+    data_saved: bool                             # JSON dosya kaydedildi mi
     data_save_path: Optional[str]                # JSON dosya yolu
     data_hash: Optional[str]                     # Duplicate detection için hash
     memory_hub_saved: bool                       # Memory-Hub'a kaydedildi mi
+    agent_outputs_saved: bool                    # Agent-Outputs DB'ye kaydedildi mi
+    qdrant_saved: bool                           # Qdrant'a kaydedildi mi (currently disabled)
+    qdrant_doc_id: Optional[int]                 # Qdrant document ID
 
     # Delivery
     telegram_sent: bool                          # Telegram'a gönderildi mi
@@ -464,6 +467,9 @@ def init_daily_analytics_state(
         "data_save_path": None,
         "data_hash": None,
         "memory_hub_saved": False,
+        "agent_outputs_saved": False,
+        "qdrant_saved": False,
+        "qdrant_doc_id": None,
         # Delivery
         "telegram_sent": False,
         "telegram_message_id": None,

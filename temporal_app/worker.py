@@ -24,6 +24,7 @@ from temporal_app.workflows.daily_analytics import (
 )
 from temporal_app.workflows.email_assistant_workflow import EmailAssistantWorkflow, DailyEmailSummaryWorkflow
 from temporal_app.workflows.seo_landing_optimizer import SEOLandingOptimizerWorkflow, SEOWeeklyReportWorkflow
+from temporal_app.workflows.memory_hub_test import MemoryHubTestWorkflow
 
 # Import activities
 from temporal_app.activities.social_media import (
@@ -66,6 +67,7 @@ from temporal_app.activities.seo_activities import (
     save_seo_report,
     check_deployment_status,
 )
+from temporal_app.activities.memory_hub_test import test_memory_hub_save
 
 logging.basicConfig(
     level=logging.INFO,
@@ -107,6 +109,8 @@ async def run_worker():
         DailyEmailSummaryWorkflow,
         SEOLandingOptimizerWorkflow,
         SEOWeeklyReportWorkflow,
+        # Test
+        MemoryHubTestWorkflow,
     ]
 
     activities = [
@@ -145,6 +149,8 @@ async def run_worker():
         trigger_coolify_deployment,
         save_seo_report,
         check_deployment_status,
+        # Test
+        test_memory_hub_save,
     ]
 
     # Create worker

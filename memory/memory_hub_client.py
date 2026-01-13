@@ -2,12 +2,14 @@
 Memory-Hub MCP Client
 =====================
 
-HTTP/SSE client for connecting to Memory-Hub MCP server.
+HTTP client for connecting to Memory-Hub MCP server.
 Provides async methods to create memory cards for analytics data.
+
+Uses streamable HTTP transport (POST /mcp) instead of SSE for reliability.
 
 Usage:
     client = MemoryHubClient("https://memory-hub.pomandi.com")
-    await client.create_card(
+    result = await client.create_card(
         type="note",
         title="Daily Analytics",
         content="...",
@@ -19,7 +21,7 @@ Usage:
 
 import os
 import json
-import asyncio
+import uuid
 from typing import Any, Dict, Optional, List
 import httpx
 import structlog
@@ -34,7 +36,8 @@ class MemoryHubClient:
     """
     Async client for Memory-Hub MCP server.
 
-    Uses SSE transport to connect and call MCP tools.
+    Uses streamable HTTP transport for reliable tool calls.
+    Falls back to SSE transport if streamable HTTP is not available.
     """
 
     def __init__(self, base_url: Optional[str] = None):
@@ -46,65 +49,184 @@ class MemoryHubClient:
         """
         self.base_url = base_url or os.getenv("MEMORY_HUB_URL", DEFAULT_MEMORY_HUB_URL)
         self.base_url = self.base_url.rstrip("/")
-        self._session_id: Optional[str] = None
-        self._client: Optional[httpx.AsyncClient] = None
+        self._initialized = False
 
         logger.info("memory_hub_client_init", base_url=self.base_url)
 
-    async def _ensure_session(self) -> str:
+    async def _call_tool_streamable_http(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
-        Ensure we have an active SSE session.
+        Call a tool using streamable HTTP transport (POST /mcp).
+
+        Args:
+            tool_name: Name of the tool
+            arguments: Tool arguments
 
         Returns:
-            Session ID
+            Tool result
         """
-        if self._session_id:
-            return self._session_id
+        request_id = str(uuid.uuid4())
 
-        if not self._client:
-            self._client = httpx.AsyncClient(timeout=30.0)
+        # JSON-RPC request for tools/call
+        mcp_request = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": arguments
+            }
+        }
 
-        try:
-            # Connect to SSE endpoint and get session ID from the event stream
-            async with self._client.stream("GET", f"{self.base_url}/sse") as response:
-                response.raise_for_status()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/mcp",
+                    json=mcp_request,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream"
+                    }
+                )
 
-                # Read the first event which should contain the endpoint with sessionId
-                async for line in response.aiter_lines():
-                    if line.startswith("event:"):
-                        continue
+                if response.status_code == 200:
+                    result = response.json()
+                    logger.debug("memory_hub_streamable_http_response", result=result)
+
+                    # Extract result from JSON-RPC response
+                    if "result" in result:
+                        return result["result"]
+                    elif "error" in result:
+                        logger.error("memory_hub_jsonrpc_error", error=result["error"])
+                        return {"error": result["error"]}
+                    return result
+
+                elif response.status_code == 404:
+                    # Streamable HTTP not available, return None to try fallback
+                    logger.debug("memory_hub_streamable_http_not_available")
+                    return None
+
+                else:
+                    logger.error(
+                        "memory_hub_http_error",
+                        status=response.status_code,
+                        body=response.text[:500]
+                    )
+                    return {"error": f"HTTP {response.status_code}"}
+
+            except httpx.TimeoutException:
+                logger.error("memory_hub_timeout", tool=tool_name)
+                return {"error": "Request timeout"}
+            except Exception as e:
+                logger.error("memory_hub_request_error", error=str(e))
+                return {"error": str(e)}
+
+    async def _call_tool_sse(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Call a tool using SSE transport (legacy fallback).
+
+        Opens SSE connection, gets session ID, makes POST call.
+
+        Args:
+            tool_name: Name of the tool
+            arguments: Tool arguments
+
+        Returns:
+            Tool result
+        """
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            try:
+                # Step 1: Open SSE connection and get session ID
+                sse_response = await client.get(
+                    f"{self.base_url}/sse",
+                    headers={"Accept": "text/event-stream"}
+                )
+
+                if sse_response.status_code != 200:
+                    logger.error("memory_hub_sse_connect_failed", status=sse_response.status_code)
+                    return {"error": f"SSE connect failed: {sse_response.status_code}"}
+
+                # Parse session ID from SSE response
+                session_id = None
+                for line in sse_response.text.split("\n"):
                     if line.startswith("data:"):
                         data = line[5:].strip()
                         if data:
                             try:
                                 event_data = json.loads(data)
-                                # The endpoint event contains the sessionId in the URL
-                                if "endpoint" in str(event_data):
-                                    # Parse sessionId from endpoint URL
-                                    endpoint = event_data.get("endpoint", "")
-                                    if "sessionId=" in endpoint:
-                                        self._session_id = endpoint.split("sessionId=")[1].split("&")[0]
-                                        logger.info("memory_hub_session_created", session_id=self._session_id)
-                                        return self._session_id
+                                endpoint = event_data.get("endpoint", "")
+                                if "sessionId=" in endpoint:
+                                    session_id = endpoint.split("sessionId=")[1].split("&")[0]
+                                    break
                             except json.JSONDecodeError:
-                                pass
+                                continue
 
-                    # Timeout after reading initial events
-                    if self._session_id:
-                        break
+                if not session_id:
+                    logger.error("memory_hub_no_session_id")
+                    return {"error": "Failed to get session ID from SSE"}
 
-        except Exception as e:
-            logger.warning("memory_hub_session_error", error=str(e))
-            raise
+                logger.debug("memory_hub_session_obtained", session_id=session_id)
 
-        if not self._session_id:
-            raise Exception("Failed to get session ID from Memory-Hub")
+                # Step 2: Make tool call with session ID
+                mcp_message = {
+                    "jsonrpc": "2.0",
+                    "id": str(uuid.uuid4()),
+                    "method": "tools/call",
+                    "params": {
+                        "name": tool_name,
+                        "arguments": arguments
+                    }
+                }
 
-        return self._session_id
+                tool_response = await client.post(
+                    f"{self.base_url}/message",
+                    params={"sessionId": session_id},
+                    json=mcp_message,
+                    headers={"Content-Type": "application/json"}
+                )
+
+                if tool_response.status_code == 200:
+                    result = tool_response.json()
+
+                    # Handle JSON-RPC response format
+                    if "result" in result:
+                        # Extract content from MCP tool response
+                        tool_result = result["result"]
+                        if isinstance(tool_result, dict) and "content" in tool_result:
+                            contents = tool_result.get("content", [])
+                            if contents and isinstance(contents, list):
+                                for content in contents:
+                                    if content.get("type") == "text":
+                                        try:
+                                            return json.loads(content.get("text", "{}"))
+                                        except json.JSONDecodeError:
+                                            return {"text": content.get("text")}
+                        return tool_result
+
+                    return result
+                else:
+                    logger.error("memory_hub_tool_call_failed", status=tool_response.status_code)
+                    return {"error": f"Tool call failed: {tool_response.status_code}"}
+
+            except httpx.TimeoutException:
+                logger.error("memory_hub_sse_timeout", tool=tool_name)
+                return {"error": "SSE timeout"}
+            except Exception as e:
+                logger.error("memory_hub_sse_error", error=str(e))
+                return {"error": str(e)}
 
     async def _call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """
         Call an MCP tool on the Memory-Hub server.
+
+        Tries streamable HTTP first, falls back to SSE if not available.
 
         Args:
             tool_name: Name of the tool (e.g., "memory_create")
@@ -113,97 +235,15 @@ class MemoryHubClient:
         Returns:
             Tool result
         """
-        # For simplicity, we'll use the direct HTTP approach
-        # Memory-Hub also supports direct tool calls
+        # Try streamable HTTP transport first (more reliable)
+        result = await self._call_tool_streamable_http(tool_name, arguments)
 
-        if not self._client:
-            self._client = httpx.AsyncClient(timeout=30.0)
+        if result is None:
+            # Streamable HTTP not available, fallback to SSE
+            logger.info("memory_hub_fallback_to_sse", tool=tool_name)
+            result = await self._call_tool_sse(tool_name, arguments)
 
-        try:
-            # First, get a session via SSE
-            session_id = await self._get_session_simple()
-
-            if not session_id:
-                logger.warning("memory_hub_no_session", tool=tool_name)
-                return {"error": "Failed to establish session"}
-
-            # Prepare MCP message
-            mcp_message = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": tool_name,
-                    "arguments": arguments
-                }
-            }
-
-            # Send to message endpoint
-            response = await self._client.post(
-                f"{self.base_url}/message",
-                params={"sessionId": session_id},
-                json=mcp_message,
-                headers={"Content-Type": "application/json"}
-            )
-            response.raise_for_status()
-
-            result = response.json()
-            logger.debug("memory_hub_tool_response", tool=tool_name, result=result)
-
-            return result
-
-        except httpx.HTTPStatusError as e:
-            logger.error("memory_hub_http_error", tool=tool_name, status=e.response.status_code)
-            return {"error": f"HTTP {e.response.status_code}"}
-        except Exception as e:
-            logger.error("memory_hub_call_error", tool=tool_name, error=str(e))
-            return {"error": str(e)}
-
-    async def _get_session_simple(self) -> Optional[str]:
-        """
-        Get a session ID using a simple SSE connection.
-
-        Opens SSE, reads first event to get sessionId, then keeps connection for tool calls.
-        """
-        if self._session_id:
-            return self._session_id
-
-        if not self._client:
-            self._client = httpx.AsyncClient(timeout=60.0)
-
-        try:
-            # Open SSE connection with streaming
-            # We need to keep this connection open for the session to remain valid
-            response = await self._client.get(
-                f"{self.base_url}/sse",
-                headers={"Accept": "text/event-stream"}
-            )
-
-            if response.status_code != 200:
-                logger.warning("memory_hub_sse_error", status=response.status_code)
-                return None
-
-            # Parse SSE response to find sessionId in endpoint event
-            content = response.text
-            for line in content.split("\n"):
-                if line.startswith("data:"):
-                    data = line[5:].strip()
-                    if data:
-                        try:
-                            event_data = json.loads(data)
-                            endpoint = event_data.get("endpoint", "")
-                            if "sessionId=" in endpoint:
-                                self._session_id = endpoint.split("sessionId=")[1].split("&")[0]
-                                logger.info("memory_hub_session_obtained", session_id=self._session_id)
-                                return self._session_id
-                        except json.JSONDecodeError:
-                            continue
-
-            return None
-
-        except Exception as e:
-            logger.error("memory_hub_session_error", error=str(e))
-            return None
+        return result
 
     async def health_check(self) -> Dict[str, Any]:
         """
@@ -212,16 +252,15 @@ class MemoryHubClient:
         Returns:
             Health status dict
         """
-        if not self._client:
-            self._client = httpx.AsyncClient(timeout=10.0)
-
-        try:
-            response = await self._client.get(f"{self.base_url}/health")
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            logger.error("memory_hub_health_error", error=str(e))
-            return {"status": "error", "error": str(e)}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                response = await client.get(f"{self.base_url}/health")
+                if response.status_code == 200:
+                    return response.json()
+                return {"status": "unhealthy", "code": response.status_code}
+            except Exception as e:
+                logger.error("memory_hub_health_error", error=str(e))
+                return {"status": "error", "error": str(e)}
 
     async def create_card(
         self,
@@ -271,7 +310,21 @@ class MemoryHubClient:
         if on_duplicate:
             arguments["on_duplicate"] = on_duplicate
 
-        return await self._call_tool("memory_create", arguments)
+        result = await self._call_tool("memory_create", arguments)
+
+        # Check for success
+        if isinstance(result, dict):
+            if result.get("success") or result.get("id"):
+                logger.info(
+                    "memory_hub_card_created",
+                    title=title,
+                    id=result.get("id"),
+                    action=result.get("action")
+                )
+            elif result.get("error"):
+                logger.error("memory_hub_create_failed", error=result.get("error"))
+
+        return result
 
     async def search(
         self,
@@ -307,10 +360,6 @@ class MemoryHubClient:
 
     async def close(self):
         """Close the client and cleanup resources."""
-        if self._client:
-            await self._client.aclose()
-            self._client = None
-        self._session_id = None
         logger.debug("memory_hub_client_closed")
 
 
@@ -361,15 +410,28 @@ async def save_to_memory_hub(
             on_duplicate="update"
         )
 
-        success = result.get("success", False) or "id" in str(result)
-        logger.info(
-            "memory_hub_save_result",
-            success=success,
-            title=title,
-            result=result
+        # Check for success indicators
+        success = (
+            result.get("success", False) or
+            result.get("id") is not None or
+            result.get("action") in ["created", "updated"]
         )
+
+        if success:
+            logger.info(
+                "memory_hub_save_success",
+                title=title,
+                id=result.get("id")
+            )
+        else:
+            logger.error(
+                "memory_hub_save_failed",
+                title=title,
+                result=result
+            )
+
         return success
 
     except Exception as e:
-        logger.warning("memory_hub_save_error", error=str(e), title=title)
+        logger.error("memory_hub_save_error", error=str(e), title=title)
         return False

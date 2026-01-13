@@ -549,7 +549,10 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
         """
         Node 3: Check existing landing pages.
 
-        Scans config directory AND Memory Hub for existing pages to avoid duplicates.
+        Scans:
+        1. Remote pages-index.json (primary source - contains all deployed pages)
+        2. Local config directory (fallback)
+        3. Memory Hub for previously generated keywords
         """
         logger.info("check_existing_pages_start")
 
@@ -557,14 +560,32 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
             existing_pages = []
             existing_keywords = []
 
-            # 1. Check local config directory
+            # 1. FIRST: Fetch from deployed pages-index.json (most reliable source)
+            try:
+                import httpx
+                pages_index_url = "http://dkgksok4g0o04oko88g08s0g.46.224.117.155.sslip.io/pages-index.json"
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(pages_index_url)
+                    if response.status_code == 200:
+                        data = response.json()
+                        for page in data.get("pages", []):
+                            slug = page.get("slug", "")
+                            if slug:
+                                existing_pages.append(slug)
+                                # Add slug as keyword too
+                                existing_keywords.append(slug.replace("-", " "))
+                        logger.info("pages_index_fetched", count=len(existing_pages))
+            except Exception as e:
+                logger.warning("pages_index_fetch_failed", error=str(e))
+
+            # 2. FALLBACK: Check local config directory
             if LANDING_PAGES_CONFIG_PATH.exists():
                 for config_file in LANDING_PAGES_CONFIG_PATH.glob("*.json"):
                     try:
                         with open(config_file, 'r', encoding='utf-8') as f:
                             config = json.load(f)
                             slug = config.get("slug", "")
-                            if slug:
+                            if slug and slug not in existing_pages:
                                 existing_pages.append(slug)
 
                             # Extract keywords from SEO config
@@ -582,7 +603,7 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
                     except Exception as e:
                         logger.warning(f"Failed to parse {config_file}: {e}")
 
-            # 2. Check Memory Hub for previously generated keywords
+            # 3. Check Memory Hub for previously generated keywords
             try:
                 memory_keywords = await self._get_generated_keywords_from_memory_hub()
                 existing_keywords.extend(memory_keywords)
@@ -1448,10 +1469,11 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
                 logger.warning("memory_search_error", error=result.get("error"))
                 return keywords
 
-            # Extract keywords from results
-            results = result.get("results", result.get("matches", []))
+            # Extract keywords from results (new JSON format)
+            results = result.get("results", [])
             for item in results:
-                metadata = item.get("metadata", {})
+                # New format: {"score": ..., "metadata": {...}}
+                metadata = item.get("metadata", item.get("payload", {}))
                 keyword = metadata.get("keyword")
                 if keyword:
                     keywords.append(keyword.lower())
@@ -1505,8 +1527,13 @@ ALLEEN JSON TERUGGEVEN, GEEN ANDERE TEKST."""
                 logger.warning("memory_save_error", error=result.get("error"))
                 return False
 
-            logger.info("keyword_saved_to_memory", keyword=keyword, slug=slug)
-            return True
+            # Check for success in new JSON format
+            if result.get("success"):
+                logger.info("keyword_saved_to_memory", keyword=keyword, slug=slug, doc_id=result.get("doc_id"))
+                return True
+            else:
+                logger.info("keyword_saved_to_memory", keyword=keyword, slug=slug)
+                return True
 
         except Exception as e:
             logger.warning("memory_hub_save_failed", error=str(e), keyword=keyword)

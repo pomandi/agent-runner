@@ -175,27 +175,24 @@ async def handle_call_tool(
                 filters=filters
             )
 
-            # Format response
-            if not results:
-                return [types.TextContent(
-                    type="text",
-                    text=f"No similar content found in '{collection}' collection."
-                )]
-
-            # Build readable response
-            response_lines = [f"Found {len(results)} similar items in '{collection}':\n"]
-            for i, result in enumerate(results, 1):
-                score = result["score"]
-                payload = result["payload"]
-
-                response_lines.append(f"\n{i}. Similarity: {score:.2%}")
-                for key, value in payload.items():
-                    if not key.startswith("_"):  # Skip internal fields
-                        response_lines.append(f"   {key}: {value}")
+            # Return JSON response for programmatic access
+            import json
+            response_data = {
+                "collection": collection,
+                "query": query,
+                "count": len(results),
+                "results": [
+                    {
+                        "score": r["score"],
+                        "metadata": {k: v for k, v in r["payload"].items() if not k.startswith("_")}
+                    }
+                    for r in results
+                ]
+            }
 
             return [types.TextContent(
                 type="text",
-                text="\n".join(response_lines)
+                text=json.dumps(response_data)
             )]
 
         elif name == "save_to_memory":
@@ -217,9 +214,15 @@ async def handle_call_tool(
                 metadata=metadata
             )
 
+            import json
             return [types.TextContent(
                 type="text",
-                text=f"Successfully saved to '{collection}' collection (ID: {doc_id})"
+                text=json.dumps({
+                    "success": True,
+                    "collection": collection,
+                    "doc_id": str(doc_id),
+                    "message": f"Successfully saved to '{collection}' collection"
+                })
             )]
 
         elif name == "get_memory_stats":
