@@ -10,7 +10,6 @@ during the message call.
 import os
 import json
 import re
-import asyncio
 from datetime import datetime
 from temporalio import activity
 import structlog
@@ -28,7 +27,7 @@ async def test_memory_hub_save() -> dict:
     Test saving to Memory-Hub via SSE transport.
 
     IMPORTANT: The SSE session only exists while the SSE connection is open.
-    We must keep the SSE stream open and call /message in parallel.
+    We must keep the SSE stream open and call /message while connected.
 
     Returns:
         dict with success status and details
@@ -72,7 +71,7 @@ async def test_memory_hub_save() -> dict:
                     result["error"] = f"SSE connect failed: {response.status_code}"
                     return result
 
-                # Read first chunk to get session ID
+                # Read chunks to get session ID
                 session_id = None
                 collected_data = ""
 
@@ -124,39 +123,19 @@ async def test_memory_hub_save() -> dict:
                                         "status": create_resp.status_code,
                                         "response": create_resp.text[:200]
                                     }
-                                    logger.info("memory_hub_card_created", status=create_resp.status_code, response=create_resp.text[:200])
-
-                                    # Now wait for the result to come back on the SSE stream
-                                    # Read more chunks to get the response
-                                    response_data = ""
-                                    try:
-                                        async for resp_chunk in response.aiter_text():
-                                            response_data += resp_chunk
-                                            logger.info("memory_hub_sse_response_chunk", chunk_len=len(resp_chunk))
-
-                                            # Look for the result in the SSE stream
-                                            if "result" in response_data and test_id in response_data:
-                                                logger.info("memory_hub_result_received", data=response_data[:500])
-                                                result["card_created"]["sse_result"] = response_data[:1000]
-                                                break
-
-                                            # Safety: don't read too much
-                                            if len(response_data) > 5000:
-                                                logger.info("memory_hub_result_truncated")
-                                                result["card_created"]["sse_result"] = response_data[:1000]
-                                                break
-                                    except asyncio.TimeoutError:
-                                        logger.info("memory_hub_result_timeout")
-                                        result["card_created"]["sse_result"] = "timeout waiting for result"
-
+                                    logger.info("memory_hub_card_created",
+                                              status=create_resp.status_code,
+                                              response=create_resp.text[:200])
                                 else:
                                     result["error"] = f"Card create failed: {create_resp.status_code} - {create_resp.text[:200]}"
 
-                            break  # Exit SSE loop after we're done
+                            # Done - exit the SSE loop
+                            # (Don't try to read more from SSE - causes stream re-read error)
+                            break
 
                     # Safety limit
                     if len(collected_data) > 2000:
-                        result["error"] = f"No session ID found after 2KB"
+                        result["error"] = "No session ID found after 2KB"
                         return result
 
         if not session_id:

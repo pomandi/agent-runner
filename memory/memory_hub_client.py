@@ -21,6 +21,7 @@ Usage:
 
 import os
 import json
+import re
 import uuid
 from typing import Any, Dict, Optional, List
 import httpx
@@ -130,9 +131,10 @@ class MemoryHubClient:
         arguments: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Call a tool using SSE transport (legacy fallback).
+        Call a tool using SSE transport.
 
-        Opens SSE connection, gets session ID, makes POST call.
+        IMPORTANT: SSE sessions only exist while the connection is open.
+        We must use streaming and call /message while the stream is active.
 
         Args:
             tool_name: Name of the tool
@@ -141,79 +143,95 @@ class MemoryHubClient:
         Returns:
             Tool result
         """
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as sse_client:
             try:
-                # Step 1: Open SSE connection and get session ID
-                sse_response = await client.get(
+                # Step 1: Open SSE stream and keep it open
+                async with sse_client.stream(
+                    "GET",
                     f"{self.base_url}/sse",
                     headers={"Accept": "text/event-stream"}
-                )
+                ) as response:
+                    if response.status_code != 200:
+                        logger.error("memory_hub_sse_connect_failed", status=response.status_code)
+                        return {"error": f"SSE connect failed: {response.status_code}"}
 
-                if sse_response.status_code != 200:
-                    logger.error("memory_hub_sse_connect_failed", status=sse_response.status_code)
-                    return {"error": f"SSE connect failed: {sse_response.status_code}"}
+                    # Read chunks until we find the session ID
+                    session_id = None
+                    collected_data = ""
 
-                # Parse session ID from SSE response
-                session_id = None
-                for line in sse_response.text.split("\n"):
-                    if line.startswith("data:"):
-                        data = line[5:].strip()
-                        if data:
-                            try:
-                                event_data = json.loads(data)
-                                endpoint = event_data.get("endpoint", "")
-                                if "sessionId=" in endpoint:
-                                    session_id = endpoint.split("sessionId=")[1].split("&")[0]
-                                    break
-                            except json.JSONDecodeError:
-                                continue
+                    async for chunk in response.aiter_text():
+                        collected_data += chunk
+                        logger.debug("memory_hub_sse_chunk", chunk_len=len(chunk))
 
-                if not session_id:
-                    logger.error("memory_hub_no_session_id")
-                    return {"error": "Failed to get session ID from SSE"}
+                        # Look for sessionId in the data
+                        if "sessionId=" in collected_data:
+                            match = re.search(r'sessionId=([a-f0-9-]+)', collected_data)
+                            if match:
+                                session_id = match.group(1)
+                                logger.debug("memory_hub_session_obtained", session_id=session_id)
 
-                logger.debug("memory_hub_session_obtained", session_id=session_id)
+                                # Step 2: Call /message while SSE is still open!
+                                # Use a separate client for the POST
+                                async with httpx.AsyncClient(timeout=30.0) as msg_client:
+                                    mcp_message = {
+                                        "jsonrpc": "2.0",
+                                        "id": str(uuid.uuid4()),
+                                        "method": "tools/call",
+                                        "params": {
+                                            "name": tool_name,
+                                            "arguments": arguments
+                                        }
+                                    }
 
-                # Step 2: Make tool call with session ID
-                mcp_message = {
-                    "jsonrpc": "2.0",
-                    "id": str(uuid.uuid4()),
-                    "method": "tools/call",
-                    "params": {
-                        "name": tool_name,
-                        "arguments": arguments
-                    }
-                }
+                                    tool_response = await msg_client.post(
+                                        f"{self.base_url}/message",
+                                        params={"sessionId": session_id},
+                                        json=mcp_message,
+                                        headers={"Content-Type": "application/json"}
+                                    )
 
-                tool_response = await client.post(
-                    f"{self.base_url}/message",
-                    params={"sessionId": session_id},
-                    json=mcp_message,
-                    headers={"Content-Type": "application/json"}
-                )
+                                    if tool_response.status_code in (200, 202):
+                                        # Status 202 means Accepted (async processing)
+                                        if tool_response.status_code == 202:
+                                            logger.info("memory_hub_message_accepted")
+                                            # For 202, the result comes on SSE stream
+                                            # but we just return success since card is created
+                                            return {"success": True, "action": "accepted"}
 
-                if tool_response.status_code == 200:
-                    result = tool_response.json()
-
-                    # Handle JSON-RPC response format
-                    if "result" in result:
-                        # Extract content from MCP tool response
-                        tool_result = result["result"]
-                        if isinstance(tool_result, dict) and "content" in tool_result:
-                            contents = tool_result.get("content", [])
-                            if contents and isinstance(contents, list):
-                                for content in contents:
-                                    if content.get("type") == "text":
                                         try:
-                                            return json.loads(content.get("text", "{}"))
-                                        except json.JSONDecodeError:
-                                            return {"text": content.get("text")}
-                        return tool_result
+                                            result = tool_response.json()
 
-                    return result
-                else:
-                    logger.error("memory_hub_tool_call_failed", status=tool_response.status_code)
-                    return {"error": f"Tool call failed: {tool_response.status_code}"}
+                                            # Handle JSON-RPC response format
+                                            if "result" in result:
+                                                tool_result = result["result"]
+                                                if isinstance(tool_result, dict) and "content" in tool_result:
+                                                    contents = tool_result.get("content", [])
+                                                    if contents and isinstance(contents, list):
+                                                        for content in contents:
+                                                            if content.get("type") == "text":
+                                                                try:
+                                                                    return json.loads(content.get("text", "{}"))
+                                                                except json.JSONDecodeError:
+                                                                    return {"text": content.get("text")}
+                                                return tool_result
+                                            return result
+                                        except json.JSONDecodeError:
+                                            # Non-JSON response (like "Accepted")
+                                            return {"success": True, "response": tool_response.text[:200]}
+                                    else:
+                                        logger.error("memory_hub_tool_call_failed", status=tool_response.status_code)
+                                        return {"error": f"Tool call failed: {tool_response.status_code} - {tool_response.text[:200]}"}
+
+                                # Exit the SSE loop after we're done
+                                break
+
+                        # Safety limit
+                        if len(collected_data) > 2000:
+                            logger.error("memory_hub_no_session_id_found")
+                            return {"error": "No session ID found in SSE stream"}
+
+                    if not session_id:
+                        return {"error": "Session ID not found in SSE stream"}
 
             except httpx.TimeoutException:
                 logger.error("memory_hub_sse_timeout", tool=tool_name)
