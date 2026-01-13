@@ -3,12 +3,14 @@ Memory-Hub Test Activity
 ========================
 
 Simple activity to test Memory-Hub connectivity from Temporal worker.
-Uses proper SSE streaming to get session ID.
+Uses proper SSE streaming to get session ID and keeps connection open
+during the message call.
 """
 
 import os
 import json
 import re
+import asyncio
 from datetime import datetime
 from temporalio import activity
 import structlog
@@ -25,7 +27,8 @@ async def test_memory_hub_save() -> dict:
     """
     Test saving to Memory-Hub via SSE transport.
 
-    Uses streaming to properly handle SSE endpoint and extract session ID.
+    IMPORTANT: The SSE session only exists while the SSE connection is open.
+    We must keep the SSE stream open and call /message in parallel.
 
     Returns:
         dict with success status and details
@@ -55,12 +58,11 @@ async def test_memory_hub_save() -> dict:
             health_resp = await client.get(f"{MEMORY_HUB_URL}/health")
             result["health_check"] = health_resp.json() if health_resp.status_code == 200 else {"error": health_resp.status_code}
 
-        # Step 2: Get SSE session using streaming
+        # Step 2: Get SSE session and keep it open while calling /message
         logger.info("memory_hub_sse_connect_streaming")
-        session_id = None
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # Use streaming to read only what we need
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # Use streaming to keep the SSE connection open
             async with client.stream(
                 "GET",
                 f"{MEMORY_HUB_URL}/sse",
@@ -70,72 +72,95 @@ async def test_memory_hub_save() -> dict:
                     result["error"] = f"SSE connect failed: {response.status_code}"
                     return result
 
-                # Read chunks until we find the session ID
+                # Read first chunk to get session ID
+                session_id = None
                 collected_data = ""
+
                 async for chunk in response.aiter_text():
                     collected_data += chunk
                     logger.info("memory_hub_sse_chunk", chunk_len=len(chunk), total_len=len(collected_data))
 
                     # Look for sessionId in the data
-                    # Format: data: {"endpoint":"https://memory-hub.pomandi.com/message?sessionId=xxx"}
                     if "sessionId=" in collected_data:
                         match = re.search(r'sessionId=([a-f0-9-]+)', collected_data)
                         if match:
                             session_id = match.group(1)
+                            result["sse_raw_data"] = collected_data[:500]
+                            result["sse_session"] = session_id
                             logger.info("memory_hub_session_found", session_id=session_id)
-                            result["sse_raw_data"] = collected_data[:500]  # Store for debugging
-                            break
 
-                    # Safety limit - don't read too much
+                            # NOW call /message while SSE is still open!
+                            # Use a separate client for the POST
+                            async with httpx.AsyncClient(timeout=30.0) as msg_client:
+                                mcp_request = {
+                                    "jsonrpc": "2.0",
+                                    "id": test_id,
+                                    "method": "tools/call",
+                                    "params": {
+                                        "name": "memory_create",
+                                        "arguments": {
+                                            "type": "note",
+                                            "title": f"Temporal Worker Test - {timestamp}",
+                                            "content": f"Test from Temporal worker. Test ID: {test_id}",
+                                            "project": "pomandi",
+                                            "tags": ["test", "temporal-worker", "memory-hub-test"],
+                                            "data_source": "temporal-worker-test",
+                                            "data_date": datetime.utcnow().strftime("%Y-%m-%d")
+                                        }
+                                    }
+                                }
+
+                                logger.info("memory_hub_create_card", session_id=session_id)
+                                create_resp = await msg_client.post(
+                                    f"{MEMORY_HUB_URL}/message",
+                                    params={"sessionId": session_id},
+                                    json=mcp_request,
+                                    headers={"Content-Type": "application/json"},
+                                    timeout=15.0
+                                )
+
+                                if create_resp.status_code == 200 or create_resp.status_code == 202:
+                                    result["card_created"] = {
+                                        "status": create_resp.status_code,
+                                        "response": create_resp.text[:200]
+                                    }
+                                    logger.info("memory_hub_card_created", status=create_resp.status_code, response=create_resp.text[:200])
+
+                                    # Now wait for the result to come back on the SSE stream
+                                    # Read more chunks to get the response
+                                    response_data = ""
+                                    try:
+                                        async for resp_chunk in response.aiter_text():
+                                            response_data += resp_chunk
+                                            logger.info("memory_hub_sse_response_chunk", chunk_len=len(resp_chunk))
+
+                                            # Look for the result in the SSE stream
+                                            if "result" in response_data and test_id in response_data:
+                                                logger.info("memory_hub_result_received", data=response_data[:500])
+                                                result["card_created"]["sse_result"] = response_data[:1000]
+                                                break
+
+                                            # Safety: don't read too much
+                                            if len(response_data) > 5000:
+                                                logger.info("memory_hub_result_truncated")
+                                                result["card_created"]["sse_result"] = response_data[:1000]
+                                                break
+                                    except asyncio.TimeoutError:
+                                        logger.info("memory_hub_result_timeout")
+                                        result["card_created"]["sse_result"] = "timeout waiting for result"
+
+                                else:
+                                    result["error"] = f"Card create failed: {create_resp.status_code} - {create_resp.text[:200]}"
+
+                            break  # Exit SSE loop after we're done
+
+                    # Safety limit
                     if len(collected_data) > 2000:
-                        result["error"] = f"No session ID found after 2KB: {collected_data[:500]}"
+                        result["error"] = f"No session ID found after 2KB"
                         return result
 
         if not session_id:
-            result["error"] = f"Session ID not found in SSE stream"
-            return result
-
-        result["sse_session"] = session_id
-        logger.info("memory_hub_session_obtained", session_id=session_id)
-
-        # Step 3: Create memory card using the session
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            mcp_request = {
-                "jsonrpc": "2.0",
-                "id": test_id,
-                "method": "tools/call",
-                "params": {
-                    "name": "memory_create",
-                    "arguments": {
-                        "type": "note",
-                        "title": f"Temporal Worker Test - {timestamp}",
-                        "content": f"Test from Temporal worker. Test ID: {test_id}",
-                        "project": "pomandi",
-                        "tags": ["test", "temporal-worker", "memory-hub-test"],
-                        "data_source": "temporal-worker-test",
-                        "data_date": datetime.utcnow().strftime("%Y-%m-%d")
-                    }
-                }
-            }
-
-            logger.info("memory_hub_create_card", session_id=session_id)
-            create_resp = await client.post(
-                f"{MEMORY_HUB_URL}/message",
-                params={"sessionId": session_id},
-                json=mcp_request,
-                headers={"Content-Type": "application/json"},
-                timeout=15.0
-            )
-
-            if create_resp.status_code == 200:
-                # The /message endpoint returns "Accepted" or similar, not JSON
-                result["card_created"] = {
-                    "status": create_resp.status_code,
-                    "response": create_resp.text[:200]
-                }
-                logger.info("memory_hub_card_created", status=create_resp.status_code, response=create_resp.text[:200])
-            else:
-                result["error"] = f"Card create failed: {create_resp.status_code} - {create_resp.text[:200]}"
+            result["error"] = "Session ID not found in SSE stream"
 
     except httpx.TimeoutException as e:
         result["error"] = f"Timeout: {str(e)}"
