@@ -9,7 +9,6 @@ Triggered manually by user command - no automatic scheduling.
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from datetime import timedelta
-import structlog
 
 with workflow.unsafe.imports_passed_through():
     from temporal_app.activities.email_activities import (
@@ -18,7 +17,8 @@ with workflow.unsafe.imports_passed_through():
         send_daily_email_summary
     )
 
-logger = structlog.get_logger(__name__)
+# Note: Use workflow.logger inside workflow methods instead of structlog
+# structlog causes sandbox restriction issues with Temporal
 
 
 @workflow.defn

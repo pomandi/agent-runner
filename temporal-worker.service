@@ -1,0 +1,38 @@
+[Unit]
+Description=Temporal Worker for Claude Agents
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=claude
+Group=claude
+WorkingDirectory=/home/claude/.claude/agents/agent-runner
+
+# Environment file
+EnvironmentFile=/home/claude/.claude/agents/agent-runner/.env.host
+
+# PYTHONPATH for imports
+Environment=PYTHONPATH=/home/claude/.claude/agents/agent-runner
+
+# Virtual environment activation + worker start
+ExecStart=/home/claude/.claude/agents/agent-runner/venv/bin/python3 -m temporal_app.worker
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitInterval=60
+StartLimitBurst=3
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=temporal-worker
+
+# Security - allow full access for file operations
+NoNewPrivileges=false
+ProtectSystem=false
+ProtectHome=false
+
+[Install]
+WantedBy=multi-user.target

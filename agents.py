@@ -77,7 +77,7 @@ Full post with caption to both Facebook and Instagram feed.
 | costume | FR | costumemariagehomme.be |
 
 ## Rules
-- NEVER use pomandi.be (correct: pomandi.com)
+- NEVER use pomandi.com (correct: pomandi.com)
 - ALWAYS include appointment link for Pomandi (feed posts only)
 - ALWAYS save report with S3 key after publishing
 - Stories don't need captions - just image URL

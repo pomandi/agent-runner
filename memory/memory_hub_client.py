@@ -429,10 +429,11 @@ async def save_to_memory_hub(
         )
 
         # Check for success indicators
+        # Note: SSE transport returns "accepted" for 202 responses
         success = (
             result.get("success", False) or
             result.get("id") is not None or
-            result.get("action") in ["created", "updated"]
+            result.get("action") in ["created", "updated", "accepted"]
         )
 
         if success:
