@@ -267,9 +267,9 @@ services:
     container_name: agent-redis
     image: redis:7-alpine
     restart: unless-stopped
-    # Port exposed for host worker access
+    # Port exposed for host worker access (localhost only for security)
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis-data:/data
     command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
